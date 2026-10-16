@@ -41,7 +41,10 @@ $setup = Join-Path $Root "Apps\_setup"
 $zip = Join-Path $setup "RetroWin-$Ref.zip"
 $dir = Join-Path $setup $Ref
 New-Item -ItemType Directory -Force -Path $setup | Out-Null
-& curl.exe -L --fail --retry 3 --connect-timeout 20 --progress-bar -A "Mozilla/5.0 RetroWinSetup" -o $zip "https://github.com/$Repo/archive/$Ref.zip"
+# PowerShell 5.1 con l'output rediretto tratta lo stderr di curl come errore: qui non deve fermare
+$ErrorActionPreference = "Continue"
+& curl.exe -L --fail --retry 3 --connect-timeout 20 --silent --show-error -A "Mozilla/5.0 RetroWinSetup" -o $zip "https://github.com/$Repo/archive/$Ref.zip"
+$ErrorActionPreference = "Stop"
 if ($LASTEXITCODE -ne 0) { throw "Download di $Repo ($Ref) fallito (curl codice $LASTEXITCODE)" }
 if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
 Expand-Archive -Path $zip -DestinationPath $dir -Force
