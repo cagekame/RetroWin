@@ -87,6 +87,7 @@ $Cores = @(
     "genesis_plus_gx",   # Master System / Mega Drive / Game Gear / Sega CD
     "mednafen_pce_fast", # PC Engine
     "mupen64plus_next",  # N64
+    "mednafen_saturn",   # Saturn (BIOS: sega_101.bin JP, mpr-17933.bin US/EU)
     "fbneo"              # Arcade / Neo Geo
 )
 # ----------------------------------------------------------------
