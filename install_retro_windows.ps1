@@ -678,9 +678,11 @@ Run-Step "RetroArch config" {
         $rd = Read-Cfg (Get-RdFile "retroarch.cfg")
         # esclusi: driver Linux (pulse, x, sdl2, vulkan...), percorsi Linux, URL
         # dei core Linux e valori legati all'hardware della Steam Deck o alla lingua.
+        # input_joypad_driver (sdl2) si tiene: i tasti di RetroDECK sono numerati per SDL
+        # e con xinput finirebbero su altri pulsanti (croce direzionale, assi invertiti).
         $skip = '(_driver|_directory|_dir|_path)$|^core_updater_buildbot_|^(audio_device|camera_device|microphone_device|video_refresh_rate|crt_video_refresh_rate|video_monitor_index|vulkan_gpu_index|video_max_swapchain_images|input_keyboard_layout|user_language|video_fullscreen_x|video_fullscreen_y)$'
         $vals = [ordered]@{}
-        foreach ($k in $rd.Keys) { if ($k -eq "menu_driver" -or $k -notmatch $skip) { $vals[$k] = $rd[$k] } }
+        foreach ($k in $rd.Keys) { if ($k -in "menu_driver", "input_joypad_driver" -or $k -notmatch $skip) { $vals[$k] = $rd[$k] } }
         Backup-File $cfg
         Set-CfgValues $cfg $vals
         $opt = Join-Path $ra "retroarch-core-options.cfg"
