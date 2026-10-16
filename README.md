@@ -68,6 +68,7 @@ I percorsi (ROM, BIOS, salvataggi...) li gestisce lo script: non vanno messi neg
 
 - Master System: formato 4:3 a tutto schermo (RetroDECK usa "auto", pixel 8:7).
 - Icona e splash screen RetroWin.
+- Loghi RetroWin nel tema ES-DE (`custom/files/ES-DE/themes/RetroDECK-theme-main/core/images/`).
 
 ## Nuova versione
 

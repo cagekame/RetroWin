@@ -655,6 +655,7 @@ Run-Step "ES-DE config" {
         $z = Join-Path $Dl "RetroDECK-theme.zip"
         Get-File $RdThemeUrl $z
         Install-Archive $z $theme @("theme.xml") | Out-Null
+        $script:PresetApplied = $true   # custom\files puo' sostituire file del tema: va riapplicato
         Say "Tema $RdThemeName installato"
     }
     # cartelle sistema in roms (RetroDECK: start_esde --create-system-dirs)
