@@ -1,0 +1,7 @@
+<!--
+  Impostazioni di ES-DE diverse da RetroDECK, una per riga, nello stesso
+  formato di es_settings.xml (tipo: bool, int, float, string). Esempio:
+    <string name="ThemeColorScheme" value="dark" />
+  Il testo dentro questo commento viene ignorato.
+  Non mettere qui ROMDirectory, MediaDirectory, UserThemeDirectory: li gestisce lo script.
+-->

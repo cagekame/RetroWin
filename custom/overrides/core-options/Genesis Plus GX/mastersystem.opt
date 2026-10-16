@@ -1,0 +1,2 @@
+# Master System: 4:3 a tutto schermo (RetroDECK usa "auto" = pixel 8:7, ~1,52:1)
+genesis_plus_gx_aspect_ratio = "4:3"
