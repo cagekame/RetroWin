@@ -119,6 +119,9 @@ I percorsi (ROM, BIOS, salvataggi...) li gestisce lo script: non vanno messi neg
 - Master System: formato 4:3 a tutto schermo (RetroDECK usa "auto", pixel 8:7).
 - RetroArch: driver joypad `sdl2`, perché i tasti di RetroDECK sono numerati per SDL
   (con `xinput` la croce direzionale non funziona e su/giù dell'analogico sono invertiti).
+- DuckStation: niente finestra console accanto al gioco, pad letti solo tramite SDL
+  (con anche XInput lo stesso pad compariva due volte), immagine 4:3 con i bordi neri
+  ritagliati mantenendo le proporzioni originali.
 - Icona e splash screen RetroWin.
 - Loghi RetroWin nel tema ES-DE (`custom/files/ES-DE/themes/RetroDECK-theme-main/core/images/`).
 
