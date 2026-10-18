@@ -10,7 +10,7 @@
   oppure, senza scaricare nulla a mano, con bootstrap.ps1 (vedi README.md).
 
   Opzioni:
-    -Force        riscarica e reinstalla i programmi
+    -Force        riscarica e reinstalla i programmi anche se aggiornati
     -ResetConfig  riapplica le impostazioni predefinite RetroDECK
                   (come "reset" in RetroDECK; prima fa un backup .bak)
                   e poi le personalizzazioni RetroWin
@@ -31,8 +31,10 @@
     <Root>\Apps\   programmi (in RetroDECK sono dentro il Flatpak)
       ES-DE\  Emulators\RetroArch  Emulators\DuckStation  Emulators\PCSX2
 
-  Lo script e' idempotente: salta cio' che e' gia' installato, applica le
-  impostazioni RetroDECK una sola volta e ad ogni esecuzione riallinea solo i
+  Lo script e' idempotente e fa anche da aggiornamento: installa o aggiorna i
+  programmi alle versioni di RetroDECK (o alle ultime), applica le impostazioni
+  RetroDECK per intero solo la prima volta e, quando cambia $RdCommit, aggiorna
+  solo le voci che l'utente non ha modificato; ad ogni esecuzione riallinea i
   percorsi (come "postmove" in RetroDECK). Non cancella file dell'utente:
   quando deve sostituire una cartella con un collegamento ne sposta prima il
   contenuto. Alla fine scrive report_struttura.txt nella cartella Root.
@@ -65,13 +67,17 @@ $CheatsUrl = "https://buildbot.libretro.com/assets/frontend/cheats.zip"
 
 # Impostazioni ufficiali RetroDECK (repo RetroDECK/components), fissate a un
 # commit preciso perche' il risultato sia riproducibile (commit del 2026-10-03).
+# Dallo stesso commit si leggono le versioni dei programmi (desired_versions.sh).
+# Per aggiornare RetroWin a una RetroDECK piu' recente basta cambiare questo
+# commit: chi rilancia lo script riceve programmi e impostazioni nuove, senza
+# perdere le impostazioni che ha modificato.
 $RdCommit  = "fcd0d72995d7aa2e741e2753ac6914025b2ff1ac"
-$RdBase    = "https://raw.githubusercontent.com/RetroDECK/components/$RdCommit/"
 $RdFiles   = [ordered]@{
     "es_settings.xml" = "es-de/rd_assets/rd_config/es_settings.xml"
     "retroarch.cfg"   = "retroarch/rd_assets/rd_config/retroarch.cfg"
     "settings.ini"    = "duckstation/rd_assets/rd_config/settings.ini"
     "retroarch-core-options.cfg" = "retroarch/rd_assets/rd_config/retroarch-core-options.cfg"
+    "desired_versions.sh" = "automation-tools/alchemist/desired_versions.sh"
 }
 # Tema ES-DE ufficiale RetroDECK (repo RetroDECK/RetroDECK-theme, 2026-10-03).
 $RdThemeUrl  = "https://github.com/RetroDECK/RetroDECK-theme/archive/c50205283cbb4a1bb2b05c11e897cf129f23f076.zip"
@@ -353,8 +359,42 @@ function Backup-File($f) {
     }
 }
 
-# Le impostazioni RetroDECK si applicano una volta sola (o con -ResetConfig).
-function Test-PresetNeeded($name) { return ($ResetConfig -or -not (Test-Path (Join-Path $Preset "$name.txt"))) }
+# Le impostazioni RetroDECK si applicano per intero la prima volta (o con
+# -ResetConfig); quando cambia $RdCommit si aggiornano solo le voci cambiate.
+# Commit RetroDECK delle impostazioni gia' applicate ("" = mai applicate).
+function Get-PresetCommit($name) {
+    $f = Join-Path $Preset "$name.txt"
+    if (-not (Test-Path $f)) { return "" }
+    $m = [regex]::Match((Get-Content $f -Raw), 'components ([0-9a-f]{40})')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return $RdCommit   # formato sconosciuto: considerate gia' attuali
+}
+# "full" = applica tutto, "merge" = aggiorna dal commit precedente, "" = niente da fare
+function Get-PresetMode($name) {
+    if ($ResetConfig) { return "full" }
+    $c = Get-PresetCommit $name
+    if (-not $c) { return "full" }
+    if ($c -ne $RdCommit) { return "merge" }
+    return ""
+}
+# Voci da scrivere per passare dalle impostazioni RetroDECK $old alle $new:
+# una voce cambiata da RetroDECK prende il nuovo valore solo se l'utente non
+# l'ha modificata (valore attuale uguale al vecchio, o assente); le voci nuove
+# si aggiungono sempre. Kept = voci lasciate come le ha modificate l'utente.
+function Get-RdChanges($old, $new, $cur) {
+    $set = [ordered]@{}; $kept = 0
+    foreach ($k in $new.Keys) {
+        if ($old.Contains($k) -and $old[$k] -ceq $new[$k]) { continue }
+        if (-not $old.Contains($k) -or -not $cur.Contains($k) -or $cur[$k] -ceq $old[$k]) { $set[$k] = $new[$k] }
+        else { $kept++ }
+    }
+    return @{ Set = $set; Kept = $kept }
+}
+function Say-RdUpdate($what, $n, $kept) {
+    $m = "Impostazioni RetroDECK di $what aggiornate: $n voci cambiate"
+    if ($kept) { $m += ", $kept lasciate come le avevi modificate" }
+    Say $m
+}
 function Set-PresetDone($name) {
     $script:PresetApplied = $true   # le personalizzazioni vanno riapplicate sopra
     New-Dir $Preset
@@ -431,10 +471,109 @@ function New-IcoFromPng($src, $dst) {
     [IO.File]::WriteAllBytes($dst, $out.ToArray())
 }
 
-function Get-RdFile($name) {
-    $dest = Join-Path $Dl "retrodeck\$name"
-    Get-File ($RdBase + $RdFiles[$name]) $dest
+function Get-RdFile($name, $commit = $RdCommit) {
+    $dest = Join-Path $Dl "retrodeck\$($commit.Substring(0, 8))\$name"
+    Get-File "https://raw.githubusercontent.com/RetroDECK/components/$commit/$($RdFiles[$name])" $dest
     return $dest
+}
+
+# Versioni dei programmi usate da RetroDECK (es. RETROARCH -> 1.22.2).
+# Valori come "latest" o con variabili non sono versioni: ignorati.
+function Get-RdVersions {
+    if ($null -ne $script:RdVersions) { return $script:RdVersions }
+    $h = @{}
+    try {
+        foreach ($l in [IO.File]::ReadAllLines((Get-RdFile "desired_versions.sh"))) {
+            if ($l -match '^\s*export\s+([A-Z0-9_]+)_DESIRED_VERSION="([^"$]+)"' -and $matches[2] -notmatch '^(latest|preview)$') {
+                $h[$matches[1]] = $matches[2]
+            }
+        }
+    } catch { Warn "Versioni dei programmi RetroDECK non lette ($($_.Exception.Message)): uso le ultime" }
+    $script:RdVersions = $h
+    return $h
+}
+
+# Impostazioni RetroDECK di un commit, gia' filtrate per Windows.
+function Get-RdRetroArch($commit) {
+    $rd = Read-Cfg (Get-RdFile "retroarch.cfg" $commit)
+    # esclusi: driver Linux (pulse, x, sdl2, vulkan...), percorsi Linux, URL
+    # dei core Linux e valori legati all'hardware della Steam Deck o alla lingua.
+    # input_joypad_driver (sdl2) si tiene: i tasti di RetroDECK sono numerati per SDL
+    # e con xinput finirebbero su altri pulsanti (croce direzionale, assi invertiti).
+    $skip = '(_driver|_directory|_dir|_path)$|^core_updater_buildbot_|^(audio_device|camera_device|microphone_device|video_refresh_rate|crt_video_refresh_rate|video_monitor_index|vulkan_gpu_index|video_max_swapchain_images|input_keyboard_layout|user_language|video_fullscreen_x|video_fullscreen_y)$'
+    $vals = [ordered]@{}
+    foreach ($k in $rd.Keys) { if ($k -in "menu_driver", "input_joypad_driver" -or $k -notmatch $skip) { $vals[$k] = $rd[$k] } }
+    return @{ cfg = $vals; opt = (Read-Cfg (Get-RdFile "retroarch-core-options.cfg" $commit)) }
+}
+# DuckStation: chiavi "Sezione<tab>Chiave"
+function ConvertTo-IniDict($triples) {
+    $d = [ordered]@{}
+    foreach ($t in $triples) { $d["$($t[0])`t$($t[1])"] = $t[2] }
+    return $d
+}
+function ConvertTo-Triples($d) {
+    foreach ($k in $d.Keys) { $p = $k -split "`t", 2; , @($p[0], $p[1], $d[$k]) }
+}
+function Get-RdDuckStation($commit) {
+    # RetroDECK usa DuckStation "Legacy": escluse le voci di quella versione o
+    # dell'hardware Steam Deck (UI, renderer/scheda video, backend audio
+    # Linux, vecchie sezioni ControllerN) e i percorsi (impostati a parte).
+    $skipSec = '^(UI|Controller\d)$'
+    $skipKey = '^(Main/SettingsVersion|Main/ControllerBackend|GPU/Renderer|GPU/Adapter|GPU/UseThread|GPU/ThreadedPresentation|Audio/Backend)$'
+    return ConvertTo-IniDict @(Read-IniTriples (Get-RdFile "settings.ini" $commit) | Where-Object {
+        $_[0] -notmatch $skipSec -and "$($_[0])/$($_[1])" -notmatch $skipKey -and $_[2] -notmatch 'RETRODECKHOMEDIR' })
+}
+function Get-RdEsDe($commit) {
+    $txt = [IO.File]::ReadAllText((Get-RdFile "es_settings.xml" $commit))
+    return (Set-EsSetting $txt "string" "ScreensaverSlideshowImageDir" "")   # percorso Linux
+}
+# es_settings.xml: Nome -> "tipo|valore" (valore come scritto nel file)
+function Read-EsSettings([string]$txt) {
+    $d = [ordered]@{}
+    foreach ($m in [regex]::Matches($txt, '<(bool|int|float|string) name="([^"]+)" value="([^"]*)"\s*/>')) {
+        $d[$m.Groups[2].Value] = $m.Groups[1].Value + "|" + $m.Groups[3].Value
+    }
+    return $d
+}
+
+# Versione installata di un programma (file retrowin_version.txt nella sua cartella).
+function Get-Installed($dir) {
+    $f = Join-Path $dir "retrowin_version.txt"
+    if (Test-Path $f) { return (Get-Content $f -TotalCount 1).Trim() }
+    return ""
+}
+function Set-Installed($dir, $v) { Set-Content -Path (Join-Path $dir "retrowin_version.txt") -Value $v -Encoding ASCII }
+
+# Installa o aggiorna un programma. $resolve restituisce @{ Version; Url; File }
+# (File = nome dell'archivio in _download). Se la rete non risponde e il programma
+# c'e' gia', resta la versione installata. Non scende mai a una versione piu' vecchia.
+# Gli archivi delle versioni precedenti ($oldFiles) vengono tolti da _download.
+function Update-Program($name, $dir, [string[]]$markers, [scriptblock]$resolve, [string[]]$oldFiles) {
+    $present = [bool](Get-ChildItem $dir -Filter $markers[0] -ErrorAction SilentlyContinue)
+    $have = if ($present) { Get-Installed $dir } else { "" }
+    try { $r = & $resolve }
+    catch {
+        if (-not $present) { throw }
+        Warn "${name}: non riesco a controllare gli aggiornamenti ($($_.Exception.Message)), resta la versione installata"
+        return
+    }
+    if ($present -and -not $Force) {
+        if ($have -eq $r.Version) { Say "$name $have gia' aggiornato"; return }
+        $a = $have -replace '^v', ''; $b = $r.Version -replace '^v', ''
+        if (($a -as [version]) -and ($b -as [version]) -and ([version]$a -gt [version]$b)) {
+            Say "$name $have piu' recente di $($r.Version): resta questa"; return
+        }
+    }
+    if ($present) { Say "${name}: aggiorno $(if ($have) { $have } else { 'versione precedente' }) -> $($r.Version)" }
+    else { Say "$name $($r.Version)" }
+    $z = Join-Path $Dl $r.File
+    Get-File $r.Url $z
+    Install-Archive $z $dir $markers | Out-Null
+    Set-Installed $dir $r.Version
+    foreach ($p in $oldFiles) {
+        Get-ChildItem $Dl -Filter $p -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $z } |
+            ForEach-Object { Remove-Item $_.FullName -Force; Say "Tolto da _download: $($_.Name)" }
+    }
 }
 
 function Get-GitHubAsset($repoApi, $patterns, $exclude) {
@@ -490,94 +629,85 @@ New-Dir $Dl; New-Dir $Emu
 
 # ---------------- ES-DE ----------------
 Run-Step "ES-DE" {
-    if ((Test-Path (Join-Path $EsDeApp "ES-DE.exe")) -and -not $Force) { Say "ES-DE gia' presente"; return }
-    $url = $EsDeFallbackUrl
-    try {
-        $rel = Invoke-RestMethod -Uri $EsDeReleaseApi -Headers @{ "User-Agent" = "RetroWinSetup" }
-        $a = $rel.assets.links | Where-Object { $_.name -match $EsDeAssetRegex } | Select-Object -First 1
-        if ($a) { $url = $a.direct_asset_url; Say "ES-DE $($rel.tag_name): $($a.name)" }
-        else { Warn "Asset portable non trovato nell'ultima release, uso il link fisso" }
-    } catch { Warn "API GitLab non raggiungibile ($($_.Exception.Message)), uso il link fisso" }
-    $zip = Join-Path $Dl "esde.zip"
-    Get-File $url $zip
-    Install-Archive $zip $EsDeApp @("ES-DE.exe") | Out-Null
+    Update-Program "ES-DE" $EsDeApp @("ES-DE.exe") {
+        try {
+            $rel = Invoke-RestMethod -Uri $EsDeReleaseApi -Headers @{ "User-Agent" = "RetroWinSetup" }
+            $a = $rel.assets.links | Where-Object { $_.name -match $EsDeAssetRegex } | Select-Object -First 1
+            if (-not $a) { throw "asset portable non trovato nell'ultima release" }
+            return @{ Version = $rel.tag_name; Url = $a.direct_asset_url; File = "ES-DE-$($rel.tag_name).zip" }
+        } catch {
+            if (Test-Path (Join-Path $EsDeApp "ES-DE.exe")) { throw }
+            Warn "API GitLab non raggiungibile ($($_.Exception.Message)), uso il link fisso"
+            return @{ Version = "v3.5.0"; Url = $EsDeFallbackUrl; File = "esde.zip" }
+        }
+    } @("ES-DE-*.zip", "esde.zip")
 }
 
 # ---------------- RetroArch ----------------
+# Versione indicata da RetroDECK, altrimenti l'ultima stabile. L'archivio non
+# contiene retroarch.cfg: aggiornando, le impostazioni restano.
 Run-Step "RetroArch" {
     $dest = Join-Path $Emu "RetroArch"
-    # senza retrowin_version.txt (installazioni precedenti) si reinstalla: l'archivio
-    # non contiene retroarch.cfg, quindi le impostazioni restano
-    if ((Test-Path (Join-Path $dest "retroarch.exe")) -and (Test-Path (Join-Path $dest "retrowin_version.txt")) -and -not $Force) {
-        Say "RetroArch $((Get-Content (Join-Path $dest 'retrowin_version.txt') -TotalCount 1).Trim()) gia' presente"
-    }
-    else {
-        $idx = Invoke-WebRequest -Uri $RetroArchStableIndex -UseBasicParsing
-        $vers = [regex]::Matches($idx.Content, 'href="(?:/stable/)?(\d+\.\d+\.\d+)/"') |
-            ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Unique -Descending
-        if (-not $vers) { throw "Non riesco a leggere le versioni stabili di RetroArch da $RetroArchStableIndex" }
-        $ok = $false
-        foreach ($v in $vers | Select-Object -First 3) {
-            $url = "$RetroArchStableIndex$v/windows/x86_64/RetroArch.7z"
-            try { Get-File $url (Join-Path $Dl "RetroArch-$v.7z"); $ok = $true; Say "RetroArch $v"; break }
-            catch { Warn "RetroArch $v non disponibile ($($_.Exception.Message)), provo la precedente" }
+    Update-Program "RetroArch" $dest @("retroarch.exe") {
+        $v = (Get-RdVersions)["RETROARCH"]
+        if (-not $v) {
+            $idx = Invoke-WebRequest -Uri $RetroArchStableIndex -UseBasicParsing
+            $v = [regex]::Matches($idx.Content, 'href="(?:/stable/)?(\d+\.\d+\.\d+)/"') |
+                ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Descending | Select-Object -First 1
+            if (-not $v) { throw "Non riesco a leggere le versioni stabili di RetroArch da $RetroArchStableIndex" }
         }
-        if (-not $ok) { throw "Download RetroArch fallito" }
-        Install-Archive (Join-Path $Dl "RetroArch-$v.7z") $dest @("retroarch.exe") | Out-Null
-        # versione installata: i core devono essere della stessa versione
-        Set-Content -Path (Join-Path $dest "retrowin_version.txt") -Value $v -Encoding ASCII
-    }
+        return @{ Version = "$v"; Url = "$RetroArchStableIndex$v/windows/x86_64/RetroArch.7z"; File = "RetroArch-$v.7z" }
+    } @("RetroArch-*.7z", "RetroArch.7z")
     # retroarch.cfg accanto all'exe: su Windows RetroArch lo usa (modalita' portable)
     $cfg = Join-Path $dest "retroarch.cfg"
     if (-not (Test-Path $cfg)) { New-Item -ItemType File -Path $cfg | Out-Null }
 }
 
 # ---------------- Core libretro ----------------
+# Tutti i core del pacchetto della stessa versione di RetroArch.
 Run-Step "Core libretro" {
     $ra = Join-Path $Emu "RetroArch"
-    if (-not (Test-Path (Join-Path $ra "retroarch.exe"))) { throw "RetroArch non installato: core non scaricati" }
-    $verFile = Join-Path $ra "retrowin_version.txt"
-    $v = (Get-Content $verFile -TotalCount 1).Trim()
+    $v = Get-Installed $ra
+    if (-not $v) { throw "RetroArch non installato: core non scaricati" }
     $coresDir = Join-Path $ra "cores"
-    $mark = Join-Path $coresDir "retrowin_cores.txt"
-    if ((Test-Path $mark) -and ((Get-Content $mark -TotalCount 1).Trim() -eq $v) -and -not $Force) {
-        Say "Core RetroArch $v gia' presenti"; return
-    }
-    $z = Join-Path $Dl "RetroArch_cores-$v.7z"
-    Get-File "$RetroArchStableIndex$v/windows/x86_64/RetroArch_cores.7z" $z
-    Install-Archive $z $coresDir @("*_libretro.dll") | Out-Null
-    Set-Content -Path $mark -Value $v -Encoding ASCII
-    Say "Core RetroArch ${v}: $(@(Get-ChildItem $coresDir -Filter '*_libretro.dll').Count) installati"
+    New-Dir $coresDir
+    # un core a caso basta come "eseguibile": serve solo a sapere se ci sono gia'
+    Update-Program "Core RetroArch" $coresDir @("*_libretro.dll") {
+        return @{ Version = $v; Url = "$RetroArchStableIndex$v/windows/x86_64/RetroArch_cores.7z"; File = "RetroArch_cores-$v.7z" }
+    } @("RetroArch_cores-*.7z", "*_libretro.dll.zip")
+    Say "Core installati: $(@(Get-ChildItem $coresDir -Filter '*_libretro.dll').Count)"
 }
 
 # ---------------- DuckStation ----------------
+# RetroDECK usa una sua versione per Linux: qui l'ultima release ufficiale
+# (rilasci continui sotto il tag "latest", riconosciuti dalla data).
 Run-Step "DuckStation" {
     $dest = Join-Path $Emu "DuckStation"
-    if ((Get-ChildItem $dest -Filter "duckstation-qt*.exe" -ErrorAction SilentlyContinue) -and -not $Force) { Say "DuckStation gia' presente" }
-    else {
-        $a = Get-GitHubAsset "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" @('windows-x64.*\.zip$', 'windows.*x64.*\.zip$', 'x64.*\.zip$') 'symbols|arm|debug'
-        Say "Asset: $($a.name)"
-        $z = Join-Path $Dl $a.name
-        Get-File $a.browser_download_url $z
-        Install-Archive $z $dest @("duckstation-qt*.exe") | Out-Null
-    }
+    Update-Program "DuckStation" $dest @("duckstation-qt*.exe") {
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" -Headers @{ "User-Agent" = "RetroWinSetup" }
+        $a = $rel.assets | Where-Object { $_.name -match 'windows-x64-release\.zip$' } | Select-Object -First 1
+        if (-not $a) { throw "Asset Windows x64 non trovato nella release di DuckStation" }
+        $d = ([datetime]$rel.published_at).ToUniversalTime().ToString("yyyyMMdd-HHmm")
+        return @{ Version = "latest-$d"; Url = $a.browser_download_url; File = "duckstation-$d.zip" }
+    } @("duckstation-*.zip")
     # portable.txt => impostazioni accanto all'exe
     $p = Join-Path $dest "portable.txt"
     if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p | Out-Null }
 }
 
 # ---------------- PCSX2 (opzionale) ----------------
+# Versione indicata da RetroDECK, altrimenti l'ultima release.
 if (-not $SkipPCSX2) {
     Run-Step "PCSX2" {
         $dest = Join-Path $Emu "PCSX2"
-        if ((Test-Path (Join-Path $dest "pcsx2-qt.exe")) -and -not $Force) { Say "PCSX2 gia' presente" }
-        else {
-            $a = Get-GitHubAsset "https://api.github.com/repos/PCSX2/pcsx2/releases/latest" @('windows-x64.*Qt.*\.7z$', 'windows.*x64.*\.7z$', 'windows.*\.7z$') 'symbols|arm|avx2-qt-debug'
-            Say "Asset: $($a.name)"
-            $z = Join-Path $Dl $a.name
-            Get-File $a.browser_download_url $z
-            Install-Archive $z $dest @("pcsx2-qt.exe") | Out-Null
-        }
+        Update-Program "PCSX2" $dest @("pcsx2-qt.exe") {
+            $v = (Get-RdVersions)["PCSX2"]
+            $api = if ($v) { "https://api.github.com/repos/PCSX2/pcsx2/releases/tags/$v" } else { "https://api.github.com/repos/PCSX2/pcsx2/releases/latest" }
+            $rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "RetroWinSetup" }
+            $a = $rel.assets | Where-Object { $_.name -match 'windows-x64-Qt\.7z$' } | Select-Object -First 1
+            if (-not $a) { throw "Asset Windows x64 non trovato nella release $($rel.tag_name) di PCSX2" }
+            return @{ Version = $rel.tag_name; Url = $a.browser_download_url; File = $a.name }
+        } @("pcsx2-*.7z")
         $p = Join-Path $dest "portable.ini"
         if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p | Out-Null }
     }
@@ -621,14 +751,25 @@ Run-Step "ES-DE config" {
     $setDir = Join-Path $EsDeCfg "settings"
     New-Dir $setDir
     $f = Join-Path $setDir "es_settings.xml"
-    if (Test-PresetNeeded "es-de") {
-        $rd = Get-RdFile "es_settings.xml"
+    $mode = Get-PresetMode "es-de"
+    if ($mode -eq "full" -or ($mode -and -not (Test-Path $f))) {
         Backup-File $f
-        $txt = [IO.File]::ReadAllText($rd)
-        $txt = Set-EsSetting $txt "string" "ScreensaverSlideshowImageDir" ""   # percorso Linux
-        [IO.File]::WriteAllText($f, $txt)
+        [IO.File]::WriteAllText($f, (Get-RdEsDe $RdCommit))
         Set-PresetDone "es-de"
         Say "Impostazioni RetroDECK applicate a ES-DE"
+    } elseif ($mode -eq "merge") {
+        $txt = [IO.File]::ReadAllText($f)
+        $c = Get-RdChanges (Read-EsSettings (Get-RdEsDe (Get-PresetCommit "es-de"))) (Read-EsSettings (Get-RdEsDe $RdCommit)) (Read-EsSettings $txt)
+        if ($c.Set.Count) {
+            Backup-File $f
+            foreach ($k in $c.Set.Keys) {
+                $tv = $c.Set[$k] -split '\|', 2
+                $txt = Set-EsSetting $txt $tv[0] $k ([Net.WebUtility]::HtmlDecode($tv[1]))
+            }
+            [IO.File]::WriteAllText($f, $txt)
+        }
+        Set-PresetDone "es-de"
+        Say-RdUpdate "ES-DE" $c.Set.Count $c.Kept
     }
     # percorsi (come component_prepare.sh di RetroDECK), riallineati ad ogni esecuzione
     $txt = [IO.File]::ReadAllText($f)
@@ -643,13 +784,18 @@ Run-Step "ES-DE config" {
     Set-Junction (Join-Path $Paths.logs "ES-DE") (Join-Path $EsDeCfg "logs")
     # tema RetroDECK
     $theme = Join-Path $Paths.themes $RdThemeName
-    if ((Test-Path (Join-Path $theme "theme.xml")) -and -not $Force) { Say "Tema $RdThemeName gia' presente" }
-    else {
-        $z = Join-Path $Dl "RetroDECK-theme.zip"
+    $tv = [IO.Path]::GetFileNameWithoutExtension($RdThemeUrl).Substring(0, 8)   # commit del tema
+    if ((Test-Path (Join-Path $theme "theme.xml")) -and ((Get-Installed $theme) -in @($tv, "")) -and -not $Force) {
+        if (-not (Get-Installed $theme)) { Set-Installed $theme $tv }
+        Say "Tema $RdThemeName gia' presente"
+    } else {
+        $z = Join-Path $Dl "RetroDECK-theme-$tv.zip"
         Get-File $RdThemeUrl $z
         Install-Archive $z $theme @("theme.xml") | Out-Null
+        Set-Installed $theme $tv
+        Get-ChildItem $Dl -Filter "RetroDECK-theme*.zip" -File | Where-Object { $_.FullName -ne $z } | Remove-Item -Force
         $script:PresetApplied = $true   # custom\files puo' sostituire file del tema: va riapplicato
-        Say "Tema $RdThemeName installato"
+        Say "Tema $RdThemeName installato ($tv)"
     }
     # cartelle sistema in roms (RetroDECK: start_esde --create-system-dirs)
     $before = @(Get-ChildItem $Paths.roms -Directory).Count
@@ -666,23 +812,26 @@ Run-Step "RetroArch config" {
     $ra  = Join-Path $Emu "RetroArch"
     $cfg = Join-Path $ra "retroarch.cfg"
     if (-not (Test-Path (Join-Path $ra "retroarch.exe"))) { throw "RetroArch non installato" }
-    if (Test-PresetNeeded "retroarch") {
-        $rd = Read-Cfg (Get-RdFile "retroarch.cfg")
-        # esclusi: driver Linux (pulse, x, sdl2, vulkan...), percorsi Linux, URL
-        # dei core Linux e valori legati all'hardware della Steam Deck o alla lingua.
-        # input_joypad_driver (sdl2) si tiene: i tasti di RetroDECK sono numerati per SDL
-        # e con xinput finirebbero su altri pulsanti (croce direzionale, assi invertiti).
-        $skip = '(_driver|_directory|_dir|_path)$|^core_updater_buildbot_|^(audio_device|camera_device|microphone_device|video_refresh_rate|crt_video_refresh_rate|video_monitor_index|vulkan_gpu_index|video_max_swapchain_images|input_keyboard_layout|user_language|video_fullscreen_x|video_fullscreen_y)$'
-        $vals = [ordered]@{}
-        foreach ($k in $rd.Keys) { if ($k -in "menu_driver", "input_joypad_driver" -or $k -notmatch $skip) { $vals[$k] = $rd[$k] } }
-        Backup-File $cfg
-        Set-CfgValues $cfg $vals
-        $opt = Join-Path $ra "retroarch-core-options.cfg"
-        $co = Read-Cfg (Get-RdFile "retroarch-core-options.cfg")
-        Backup-File $opt
-        Set-CfgValues $opt $co
+    $opt = Join-Path $ra "retroarch-core-options.cfg"
+    $mode = Get-PresetMode "retroarch"
+    if ($mode -eq "full") {
+        $new = Get-RdRetroArch $RdCommit
+        Backup-File $cfg; Set-CfgValues $cfg $new.cfg
+        Backup-File $opt; Set-CfgValues $opt $new.opt
         Set-PresetDone "retroarch"
-        Say "Impostazioni RetroDECK applicate a RetroArch ($($vals.Count) voci, $($co.Count) opzioni core)"
+        Say "Impostazioni RetroDECK applicate a RetroArch ($($new.cfg.Count) voci, $($new.opt.Count) opzioni core)"
+    } elseif ($mode -eq "merge") {
+        $old = Get-RdRetroArch (Get-PresetCommit "retroarch")
+        $new = Get-RdRetroArch $RdCommit
+        $n = 0; $kept = 0
+        foreach ($p in @(@($cfg, "cfg"), @($opt, "opt"))) {
+            $cur = if (Test-Path $p[0]) { Read-Cfg $p[0] } else { @{} }
+            $c = Get-RdChanges $old[$p[1]] $new[$p[1]] $cur
+            if ($c.Set.Count) { Backup-File $p[0]; Set-CfgValues $p[0] $c.Set }
+            $n += $c.Set.Count; $kept += $c.Kept
+        }
+        Set-PresetDone "retroarch"
+        Say-RdUpdate "RetroArch" $n $kept
     }
     # percorsi (come retroarch/component_prepare.sh), riallineati ad ogni esecuzione
     Set-CfgValues $cfg ([ordered]@{
@@ -734,18 +883,19 @@ Run-Step "DuckStation config" {
     $ds  = Join-Path $Emu "DuckStation"
     $ini = Join-Path $ds "settings.ini"
     if (-not (Get-ChildItem $ds -Filter "duckstation-qt*.exe" -ErrorAction SilentlyContinue)) { throw "DuckStation non installato" }
-    if (Test-PresetNeeded "duckstation") {
-        # RetroDECK usa DuckStation "Legacy": escluse le voci di quella versione o
-        # dell'hardware Steam Deck (UI, renderer/scheda video, backend audio
-        # Linux, vecchie sezioni ControllerN) e i percorsi (impostati sotto).
-        $skipSec = '^(UI|Controller\d)$'
-        $skipKey = '^(Main/SettingsVersion|Main/ControllerBackend|GPU/Renderer|GPU/Adapter|GPU/UseThread|GPU/ThreadedPresentation|Audio/Backend)$'
-        $vals = @(Read-IniTriples (Get-RdFile "settings.ini") | Where-Object {
-            $_[0] -notmatch $skipSec -and "$($_[0])/$($_[1])" -notmatch $skipKey -and $_[2] -notmatch 'RETRODECKHOMEDIR' })
+    $mode = Get-PresetMode "duckstation"
+    if ($mode -eq "full") {
+        $vals = @(ConvertTo-Triples (Get-RdDuckStation $RdCommit))
         Backup-File $ini
         Set-IniValues $ini $vals
         Set-PresetDone "duckstation"
         Say "Impostazioni RetroDECK applicate a DuckStation ($($vals.Count) voci)"
+    } elseif ($mode -eq "merge") {
+        $cur = if (Test-Path $ini) { ConvertTo-IniDict @(Read-IniTriples $ini) } else { @{} }
+        $c = Get-RdChanges (Get-RdDuckStation (Get-PresetCommit "duckstation")) (Get-RdDuckStation $RdCommit) $cur
+        if ($c.Set.Count) { Backup-File $ini; Set-IniValues $ini @(ConvertTo-Triples $c.Set) }
+        Set-PresetDone "duckstation"
+        Say-RdUpdate "DuckStation" $c.Set.Count $c.Kept
     }
     $mc = Join-Path $Paths.saves "psx\duckstation\memcards"
     $folders = [ordered]@{

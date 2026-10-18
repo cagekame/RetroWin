@@ -58,13 +58,35 @@ powershell -ExecutionPolicy Bypass -File .\install_retro_windows.ps1 -SkipPCSX2
 |---|---|
 | `-Root <cartella>` | cartella di installazione (predefinita `%USERPROFILE%\RetroWin`) |
 | `-SkipPCSX2` | non installa PCSX2 |
-| `-Force` | riscarica e reinstalla i programmi |
+| `-Force` | riscarica e reinstalla i programmi anche se sono aggiornati |
 | `-ResetConfig` | riapplica le impostazioni RetroDECK e poi le personalizzazioni (con backup `.bak`) |
 | `-NoDesktopShortcut` | non crea il collegamento sul Desktop |
 | `-Ref <tag/ramo>` | solo `bootstrap.ps1`: versione del progetto da usare |
 
-Lo script si può rilanciare quando si vuole: salta ciò che è già installato e non
-cancella file dell'utente.
+Lo script si può rilanciare quando si vuole: aggiorna ciò che serve, salta il resto e
+non cancella file dell'utente.
+
+## Aggiornamenti
+
+Per aggiornare basta rilanciare il comando di installazione.
+
+- **Programmi.** RetroArch (con i core) e PCSX2 usano la versione indicata da
+  RetroDECK in `desired_versions.sh`, se c'è; altrimenti l'ultima. ES-DE usa l'ultima
+  release, DuckStation l'ultima release ufficiale (RetroDECK ne usa una sua versione
+  per Linux). La versione installata è scritta in `retrowin_version.txt` nella
+  cartella del programma: si scarica solo ciò che è cambiato, non si torna mai a una
+  versione più vecchia e, senza rete, resta quella installata. Gli archivi dei
+  programmi non contengono impostazioni, quindi aggiornando restano.
+- **Impostazioni RetroDECK.** Sono fissate al commit `$RdCommit` di
+  [RetroDECK/components](https://github.com/RetroDECK/components) (in
+  `install_retro_windows.ps1`). La prima volta si applicano per intero. Quando
+  `$RdCommit` cambia, lo script confronta voce per voce le impostazioni RetroDECK
+  vecchie, quelle nuove e quelle attuali: se una voce non era stata modificata prende
+  il nuovo valore, se era stata modificata resta com'è. Le voci nuove si aggiungono.
+  Poi si riapplicano le personalizzazioni RetroWin. Prima di ogni modifica viene
+  fatto un backup `.bak`.
+- **Tema ES-DE.** Fissato a un commit di RetroDECK-theme (`$RdThemeUrl`): si
+  reinstalla quando cambia.
 
 ## Personalizzazioni
 
@@ -102,7 +124,9 @@ I percorsi (ROM, BIOS, salvataggi...) li gestisce lo script: non vanno messi neg
 
 ## Nuova versione
 
-1. Modifica e prova in locale (`install_retro_windows.ps1`).
+1. Modifica e prova in locale (`install_retro_windows.ps1`). Per seguire una
+   RetroDECK più recente cambia `$RdCommit` (ed eventualmente `$RdThemeUrl`) con il
+   commit voluto.
 2. Fai commit e push su `main`.
 3. Su GitHub crea una release con un tag nuovo (es. `v1.1.0`): `bootstrap.ps1` usa
    sempre l'ultima release, quindi le installazioni non prendono modifiche a metà.
