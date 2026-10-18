@@ -61,7 +61,6 @@ $EsDeFallbackUrl = "https://gitlab.com/es-de/emulationstation-de/-/package_files
 
 # L'indice usa link assoluti: href="/stable/1.22.2/"
 $RetroArchStableIndex = "https://buildbot.libretro.com/stable/"
-$CoreBase  = "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"
 $CheatsUrl = "https://buildbot.libretro.com/assets/frontend/cheats.zip"
 
 # Impostazioni ufficiali RetroDECK (repo RetroDECK/components), fissate a un
@@ -78,18 +77,8 @@ $RdFiles   = [ordered]@{
 $RdThemeUrl  = "https://github.com/RetroDECK/RetroDECK-theme/archive/c50205283cbb4a1bb2b05c11e897cf129f23f076.zip"
 $RdThemeName = "RetroDECK-theme-main"   # nome usato da RetroDECK in es_settings.xml
 
-# Core libretro da installare (nomi verificati sul buildbot).
-$Cores = @(
-    "fceumm",            # NES
-    "snes9x",            # SNES
-    "gambatte",          # Game Boy / Color
-    "mgba",              # GBA
-    "genesis_plus_gx",   # Master System / Mega Drive / Game Gear / Sega CD
-    "mednafen_pce_fast", # PC Engine
-    "mupen64plus_next",  # N64
-    "mednafen_saturn",   # Saturn (BIOS: sega_101.bin JP, mpr-17933.bin US/EU)
-    "fbneo"              # Arcade / Neo Geo
-)
+# Core libretro: tutti quelli del pacchetto RetroArch_cores.7z della stessa
+# versione stabile di RetroArch (come RetroDECK, che include tutti i core).
 # ----------------------------------------------------------------
 
 # Personalizzazioni RetroWin rispetto a RetroDECK (vedi README.md)
@@ -517,7 +506,11 @@ Run-Step "ES-DE" {
 # ---------------- RetroArch ----------------
 Run-Step "RetroArch" {
     $dest = Join-Path $Emu "RetroArch"
-    if ((Test-Path (Join-Path $dest "retroarch.exe")) -and -not $Force) { Say "RetroArch gia' presente" }
+    # senza retrowin_version.txt (installazioni precedenti) si reinstalla: l'archivio
+    # non contiene retroarch.cfg, quindi le impostazioni restano
+    if ((Test-Path (Join-Path $dest "retroarch.exe")) -and (Test-Path (Join-Path $dest "retrowin_version.txt")) -and -not $Force) {
+        Say "RetroArch $((Get-Content (Join-Path $dest 'retrowin_version.txt') -TotalCount 1).Trim()) gia' presente"
+    }
     else {
         $idx = Invoke-WebRequest -Uri $RetroArchStableIndex -UseBasicParsing
         $vers = [regex]::Matches($idx.Content, 'href="(?:/stable/)?(\d+\.\d+\.\d+)/"') |
@@ -526,11 +519,13 @@ Run-Step "RetroArch" {
         $ok = $false
         foreach ($v in $vers | Select-Object -First 3) {
             $url = "$RetroArchStableIndex$v/windows/x86_64/RetroArch.7z"
-            try { Get-File $url (Join-Path $Dl "RetroArch.7z"); $ok = $true; Say "RetroArch $v"; break }
+            try { Get-File $url (Join-Path $Dl "RetroArch-$v.7z"); $ok = $true; Say "RetroArch $v"; break }
             catch { Warn "RetroArch $v non disponibile ($($_.Exception.Message)), provo la precedente" }
         }
         if (-not $ok) { throw "Download RetroArch fallito" }
-        Install-Archive (Join-Path $Dl "RetroArch.7z") $dest @("retroarch.exe") | Out-Null
+        Install-Archive (Join-Path $Dl "RetroArch-$v.7z") $dest @("retroarch.exe") | Out-Null
+        # versione installata: i core devono essere della stessa versione
+        Set-Content -Path (Join-Path $dest "retrowin_version.txt") -Value $v -Encoding ASCII
     }
     # retroarch.cfg accanto all'exe: su Windows RetroArch lo usa (modalita' portable)
     $cfg = Join-Path $dest "retroarch.cfg"
@@ -541,21 +536,18 @@ Run-Step "RetroArch" {
 Run-Step "Core libretro" {
     $ra = Join-Path $Emu "RetroArch"
     if (-not (Test-Path (Join-Path $ra "retroarch.exe"))) { throw "RetroArch non installato: core non scaricati" }
+    $verFile = Join-Path $ra "retrowin_version.txt"
+    $v = (Get-Content $verFile -TotalCount 1).Trim()
     $coresDir = Join-Path $ra "cores"
-    New-Dir $coresDir
-    $failed = @()
-    foreach ($c in $Cores) {
-        $dll = Join-Path $coresDir "${c}_libretro.dll"
-        if ((Test-Path $dll) -and -not $Force) { Say "Core $c gia' presente"; continue }
-        try {
-            $z = Join-Path $Dl "${c}_libretro.dll.zip"
-            Get-File "$CoreBase${c}_libretro.dll.zip" $z
-            Expand-Any $z $coresDir
-            if (-not (Test-Path $dll)) { throw "${c}_libretro.dll non presente nello zip" }
-            Say "Core $c OK"
-        } catch { Warn "Core $c non installato: $($_.Exception.Message)"; $failed += $c }
+    $mark = Join-Path $coresDir "retrowin_cores.txt"
+    if ((Test-Path $mark) -and ((Get-Content $mark -TotalCount 1).Trim() -eq $v) -and -not $Force) {
+        Say "Core RetroArch $v gia' presenti"; return
     }
-    if ($failed) { throw "Core non installati: $($failed -join ', ')" }
+    $z = Join-Path $Dl "RetroArch_cores-$v.7z"
+    Get-File "$RetroArchStableIndex$v/windows/x86_64/RetroArch_cores.7z" $z
+    Install-Archive $z $coresDir @("*_libretro.dll") | Out-Null
+    Set-Content -Path $mark -Value $v -Encoding ASCII
+    Say "Core RetroArch ${v}: $(@(Get-ChildItem $coresDir -Filter '*_libretro.dll').Count) installati"
 }
 
 # ---------------- DuckStation ----------------

@@ -4,6 +4,34 @@ Una "mini RetroDECK" per Windows: ES-DE (portable) + RetroArch con i core + Duck
 (+ PCSX2 opzionale), con la stessa struttura di cartelle e le stesse impostazioni
 predefinite di [RetroDECK](https://retrodeck.net), più le personalizzazioni RetroWin.
 
+## Sistemi ed emulatori
+
+RetroArch viene installato con **tutti i core** del pacchetto ufficiale della stessa
+versione stabile (circa 200 core, 1,5 GB), come in RetroDECK. In tabella i principali:
+
+| Sistema | Emulatore |
+|---|---|
+| NES | RetroArch – FCEUmm |
+| SNES | RetroArch – Snes9x |
+| Game Boy / Game Boy Color | RetroArch – Gambatte |
+| Game Boy Advance | RetroArch – mGBA |
+| Master System / Mega Drive / Game Gear / Sega CD (BIOS CD) | RetroArch – Genesis Plus GX |
+| PC Engine / PC Engine CD (BIOS: `syscard3.pce`) | RetroArch – Beetle PCE Fast |
+| Nintendo 64 | RetroArch – Mupen64Plus-Next |
+| Sega Saturn | RetroArch – Beetle Saturn (BIOS: `sega_101.bin` JP, `mpr-17933.bin` US/EU) |
+| Arcade / Neo Geo | RetroArch – FinalBurn Neo |
+| Sega 32X | RetroArch – PicoDrive |
+| Dreamcast | RetroArch – Flycast (BIOS: `dc\dc_boot.bin`) |
+| Nintendo DS | RetroArch – melonDS DS |
+| PSP | RetroArch – PPSSPP |
+| Atari 2600 / 7800 / Lynx | RetroArch – Stella / ProSystem / Handy |
+| Neo Geo Pocket, WonderSwan | RetroArch – Beetle NeoPop / Beetle Cygne |
+| MSX, Commodore 64, Amiga, DOS | RetroArch – blueMSX / VICE / PUAE / DOSBox Pure |
+| PlayStation | DuckStation |
+| PlayStation 2 | PCSX2 (opzionale, `-SkipPCSX2` per non installarlo) |
+
+I BIOS vanno in `<Root>\bios`.
+
 ## Installazione
 
 Da PowerShell (non servono i permessi di amministratore):

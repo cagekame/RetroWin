@@ -2,3 +2,7 @@
 *.part
 Thumbs.db
 desktop.ini
+
+# Loghi originali del tema RetroDECK (solo riferimento)
+/logobc.svg
+/logog.svg
