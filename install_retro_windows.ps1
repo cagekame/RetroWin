@@ -123,6 +123,53 @@ $Paths = [ordered]@{
     videos           = Join-Path $Root "videos"
 }
 
+# Programmi: cartella e nome dell'eseguibile (installazione, controlli, verifica finale).
+$Prog = [ordered]@{
+    "ES-DE"       = @{ Dir = $EsDeApp;                       Exe = "ES-DE.exe" }
+    "RetroArch"   = @{ Dir = (Join-Path $Emu "RetroArch");   Exe = "retroarch.exe" }
+    "DuckStation" = @{ Dir = (Join-Path $Emu "DuckStation"); Exe = "duckstation-qt*.exe" }
+    "PCSX2"       = @{ Dir = (Join-Path $Emu "PCSX2");       Exe = "pcsx2-qt.exe" }
+}
+$RaDir = $Prog["RetroArch"].Dir
+$DsDir = $Prog["DuckStation"].Dir
+$EsSettingsFile = Join-Path $EsDeCfg "settings\es_settings.xml"
+
+# Percorsi scritti nelle impostazioni ad ogni esecuzione (come component_prepare.sh
+# di RetroDECK) e controllati alla fine.
+$EsDePaths = [ordered]@{
+    ROMDirectory       = $Paths.roms
+    MediaDirectory     = $Paths.downloaded_media
+    UserThemeDirectory = $Paths.themes
+}
+$RaPaths = [ordered]@{
+    savefile_directory         = $Paths.saves
+    savestate_directory        = $Paths.states
+    screenshot_directory       = Join-Path $Paths.screenshots "retroarch"
+    recording_output_directory = Join-Path $Paths.videos "retroarch"
+    log_dir                    = $Paths.logs
+    rgui_browser_directory     = $Paths.roms
+    cheat_database_path        = Join-Path $Paths.cheats "retroarch"
+    audio_filter_dir           = Join-Path $Paths.shaders "retroarch\filters\audio"
+    video_filter_dir           = Join-Path $Paths.shaders "retroarch\filters\video"
+    video_shader_dir           = Join-Path $Paths.shaders "retroarch\shaders"
+    overlay_directory          = Join-Path $Paths.borders "retroarch"
+    system_directory           = $Paths.bios
+}
+# DuckStation: chiavi "Sezione<tab>Chiave". DuckStation moderna gestisce le cartelle
+# con la sezione [Folders] invece dei collegamenti della versione Legacy di RetroDECK.
+$DsMemcards = Join-Path $Paths.saves "psx\duckstation\memcards"
+$DsPaths = [ordered]@{
+    "BIOS`tSearchDirectory"   = $Paths.bios
+    "MemoryCards`tCard1Path"  = Join-Path $DsMemcards "shared_card_1.mcd"
+    "MemoryCards`tCard2Path"  = Join-Path $DsMemcards "shared_card_2.mcd"
+    "MemoryCards`tDirectory"  = $DsMemcards
+    "GameList`tRecursivePaths" = Join-Path $Paths.roms "psx"
+    "Folders`tSaveStates"     = Join-Path $Paths.states "psx\duckstation"
+    "Folders`tScreenshots"    = Join-Path $Paths.screenshots "Duckstation"
+    "Folders`tShaders"        = Join-Path $Paths.shaders "Duckstation"
+    "Folders`tTextures"       = Join-Path $Paths.texture_packs "Duckstation\textures"
+}
+
 # Funzioni (cartella lib\ accanto allo script)
 foreach ($n in "common", "config", "programs", "branding") {
     $lib = Join-Path $PSScriptRoot "lib\$n.ps1"
@@ -145,12 +192,12 @@ New-Dir $Apps; New-Dir $Dl; New-Dir $Emu
 
 # ---------------- ES-DE ----------------
 Run-Step "ES-DE" {
-    Update-Program "ES-DE" $EsDeApp @("ES-DE.exe") {
+    Update-Program "ES-DE" $EsDeApp @($Prog["ES-DE"].Exe) {
         try {
             $rel, $a = Get-ReleaseAsset $EsDeReleaseApi $EsDeAssetRegex "portable"
             return @{ Version = $rel.tag_name; Url = $a.direct_asset_url; File = "ES-DE-$($rel.tag_name).zip" }
         } catch {
-            if (Test-Path (Join-Path $EsDeApp "ES-DE.exe")) { throw }
+            if (Get-ProgramExe "ES-DE") { throw }
             Warn "API GitLab non raggiungibile ($($_.Exception.Message)), uso il link fisso"
             return @{ Version = "v3.5.0"; Url = $EsDeFallbackUrl; File = "esde.zip" }
         }
@@ -161,8 +208,7 @@ Run-Step "ES-DE" {
 # Versione indicata da RetroDECK, altrimenti l'ultima stabile. L'archivio non
 # contiene retroarch.cfg: aggiornando, le impostazioni restano.
 Run-Step "RetroArch" {
-    $dest = Join-Path $Emu "RetroArch"
-    Update-Program "RetroArch" $dest @("retroarch.exe") {
+    Update-Program "RetroArch" $RaDir @($Prog["RetroArch"].Exe) {
         $v = (Get-RdVersions)["RETROARCH"]
         if (-not $v) {
             $idx = Invoke-WebRequest -Uri $RetroArchStableIndex -UseBasicParsing
@@ -173,16 +219,15 @@ Run-Step "RetroArch" {
         return @{ Version = "$v"; Url = (Get-RetroArchUrl $v "RetroArch.7z"); File = "RetroArch-$v.7z" }
     } @("RetroArch-*.7z")
     # retroarch.cfg accanto all'exe: su Windows RetroArch lo usa (modalita' portable)
-    New-EmptyFile (Join-Path $dest "retroarch.cfg")
+    New-EmptyFile (Join-Path $RaDir "retroarch.cfg")
 }
 
 # ---------------- Core libretro ----------------
 # Tutti i core del pacchetto della stessa versione di RetroArch.
 Run-Step "Core libretro" {
-    $ra = Join-Path $Emu "RetroArch"
-    $v = Get-Installed $ra
+    $v = Get-Installed $RaDir
     if (-not $v) { throw "RetroArch non installato: core non scaricati" }
-    $coresDir = Join-Path $ra "cores"
+    $coresDir = Join-Path $RaDir "cores"
     New-Dir $coresDir
     # un core a caso basta come "eseguibile": serve solo a sapere se ci sono gia'
     Update-Program "Core RetroArch" $coresDir @("*_libretro.dll") {
@@ -195,22 +240,21 @@ Run-Step "Core libretro" {
 # RetroDECK usa una sua versione per Linux: qui l'ultima release ufficiale
 # (rilasci continui sotto il tag "latest", riconosciuti dalla data).
 Run-Step "DuckStation" {
-    $dest = Join-Path $Emu "DuckStation"
-    Update-Program "DuckStation" $dest @("duckstation-qt*.exe") {
+    Update-Program "DuckStation" $DsDir @($Prog["DuckStation"].Exe) {
         $rel, $a = Get-ReleaseAsset "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" 'windows-x64-release\.zip$' "Windows x64 di DuckStation"
         $d = ([datetime]$rel.published_at).ToUniversalTime().ToString("yyyyMMdd-HHmm")
         return @{ Version = "latest-$d"; Url = $a.browser_download_url; File = "duckstation-$d.zip" }
     } @("duckstation-*.zip")
     # portable.txt => impostazioni accanto all'exe
-    New-EmptyFile (Join-Path $dest "portable.txt")
+    New-EmptyFile (Join-Path $DsDir "portable.txt")
 }
 
 # ---------------- PCSX2 (opzionale) ----------------
 # Versione indicata da RetroDECK, altrimenti l'ultima release.
 if (-not $SkipPCSX2) {
     Run-Step "PCSX2" {
-        $dest = Join-Path $Emu "PCSX2"
-        Update-Program "PCSX2" $dest @("pcsx2-qt.exe") {
+        $dest = $Prog["PCSX2"].Dir
+        Update-Program "PCSX2" $dest @($Prog["PCSX2"].Exe) {
             $v = (Get-RdVersions)["PCSX2"]
             $api = if ($v) { "https://api.github.com/repos/PCSX2/pcsx2/releases/tags/$v" } else { "https://api.github.com/repos/PCSX2/pcsx2/releases/latest" }
             $rel, $a = Get-ReleaseAsset $api 'windows-x64-Qt\.7z$' "Windows x64 di PCSX2"
@@ -247,51 +291,42 @@ Run-Step "Cartelle RetroDECK" {
 
 # ---------------- ES-DE: impostazioni RetroDECK ----------------
 Run-Step "ES-DE config" {
-    if (-not (Test-Path (Join-Path $EsDeApp "ES-DE.exe"))) { throw "ES-DE non installato" }
-    $setDir = Join-Path $EsDeCfg "settings"
-    New-Dir $setDir
-    $f = Join-Path $setDir "es_settings.xml"
+    if (-not (Get-ProgramExe "ES-DE")) { throw "ES-DE non installato" }
+    $f = $EsSettingsFile
+    New-Dir (Split-Path $f)
+    $orig = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { "" }
+    $txt = $orig
     $mode = Get-PresetMode "es-de"
-    if ($mode -eq "full" -or ($mode -and -not (Test-Path $f))) {
+    if ($mode -eq "full" -or ($mode -and -not $orig)) {
         Backup-File $f
-        [IO.File]::WriteAllText($f, (Get-RdEsDe $RdCommit))
-        Set-PresetDone "es-de"
+        $txt = Get-RdEsDe $RdCommit
+        Set-PresetDone "es-de" $true
         Say "Impostazioni RetroDECK applicate a ES-DE"
     } elseif ($mode -eq "merge") {
-        $txt = [IO.File]::ReadAllText($f)
         $c = Get-RdChanges (Read-EsSettings (Get-RdEsDe (Get-PresetCommit "es-de"))) (Read-EsSettings (Get-RdEsDe $RdCommit)) (Read-EsSettings $txt)
-        if ($c.Set.Count) { Backup-File $f; [IO.File]::WriteAllText($f, (Set-EsSettings $txt $c.Set)) }
-        Set-PresetDone "es-de"
+        if ($c.Set.Count) { Backup-File $f; $txt = Set-EsSettings $txt $c.Set }
+        Set-PresetDone "es-de" ($c.Set.Count -gt 0)
         Say-RdUpdate "ES-DE" $c.Set.Count $c.Kept
     }
-    # percorsi (come component_prepare.sh di RetroDECK), riallineati ad ogni esecuzione
-    $txt = [IO.File]::ReadAllText($f)
-    $txt = Set-EsSetting $txt "string" "ROMDirectory"       $Paths.roms
-    $txt = Set-EsSetting $txt "string" "MediaDirectory"     $Paths.downloaded_media
-    $txt = Set-EsSetting $txt "string" "UserThemeDirectory" $Paths.themes
-    [IO.File]::WriteAllText($f, $txt)
+    foreach ($k in $EsDePaths.Keys) { $txt = Set-EsSetting $txt "string" $k $EsDePaths[$k] }
+    if ($txt -cne $orig) { [IO.File]::WriteAllText($f, $txt) }
     # cartelle di ES-DE esposte nella cartella utente
     foreach ($d in @("gamelists", "collections", "scripts", "screensavers", "custom_systems")) {
         Set-Junction (Join-Path $Root "ES-DE\$d") (Join-Path $EsDeCfg $d)
     }
     Set-Junction (Join-Path $Paths.logs "ES-DE") (Join-Path $EsDeCfg "logs")
-    # tema RetroDECK
+    # tema RetroDECK (versione = inizio del commit nell'indirizzo)
     $theme = Join-Path $Paths.themes $RdThemeName
-    $tv = [IO.Path]::GetFileNameWithoutExtension($RdThemeUrl).Substring(0, 8)   # commit del tema
-    if ((Test-Path (Join-Path $theme "theme.xml")) -and (Get-Installed $theme) -eq $tv -and -not $Force) {
-        Say "Tema $RdThemeName gia' presente"
-    } else {
-        $z = Join-Path $Dl "RetroDECK-theme-$tv.zip"
-        Get-File $RdThemeUrl $z
-        Install-Archive $z $theme @("theme.xml") | Out-Null
-        Set-Installed $theme $tv
-        Get-ChildItem $Dl -Filter "RetroDECK-theme*.zip" -File | Where-Object { $_.FullName -ne $z } | Remove-Item -Force
-        $script:PresetApplied = $true   # custom\files puo' sostituire file del tema: va riapplicato
-        Say "Tema $RdThemeName installato ($tv)"
-    }
+    $tv = [IO.Path]::GetFileNameWithoutExtension($RdThemeUrl).Substring(0, 8)
+    $had = Get-Installed $theme
+    Update-Program "Tema $RdThemeName" $theme @("theme.xml") {
+        return @{ Version = $tv; Url = $RdThemeUrl; File = "RetroDECK-theme-$tv.zip" }
+    } @("RetroDECK-theme*.zip")
+    # custom\files puo' sostituire file del tema: va riapplicato
+    if ($Force -or (Get-Installed $theme) -ne $had) { $script:PresetApplied = $true }
     # cartelle sistema in roms (RetroDECK: start_esde --create-system-dirs)
     $before = @(Get-ChildItem $Paths.roms -Directory).Count
-    $proc = Start-Process -FilePath (Join-Path $EsDeApp "ES-DE.exe") -ArgumentList "--create-system-dirs" `
+    $proc = Start-Process -FilePath (Get-ProgramExe "ES-DE").FullName -ArgumentList "--create-system-dirs" `
         -WorkingDirectory $EsDeApp -WindowStyle Hidden -PassThru
     if (-not $proc.WaitForExit(120000)) { $proc.Kill(); throw "ES-DE --create-system-dirs non ha terminato entro 2 minuti" }
     $after = @(Get-ChildItem $Paths.roms -Directory).Count
@@ -301,16 +336,16 @@ Run-Step "ES-DE config" {
 
 # ---------------- RetroArch: impostazioni RetroDECK ----------------
 Run-Step "RetroArch config" {
-    $ra  = Join-Path $Emu "RetroArch"
+    $ra  = $RaDir
     $cfg = Join-Path $ra "retroarch.cfg"
-    if (-not (Test-Path (Join-Path $ra "retroarch.exe"))) { throw "RetroArch non installato" }
+    if (-not (Get-ProgramExe "RetroArch")) { throw "RetroArch non installato" }
     $opt = Join-Path $ra "retroarch-core-options.cfg"
     $mode = Get-PresetMode "retroarch"
     if ($mode -eq "full") {
         $new = Get-RdRetroArch $RdCommit
         Backup-File $cfg; Set-CfgValues $cfg $new.cfg
         Backup-File $opt; Set-CfgValues $opt $new.opt
-        Set-PresetDone "retroarch"
+        Set-PresetDone "retroarch" $true
         Say "Impostazioni RetroDECK applicate a RetroArch ($($new.cfg.Count) voci, $($new.opt.Count) opzioni core)"
     } elseif ($mode -eq "merge") {
         $old = Get-RdRetroArch (Get-PresetCommit "retroarch")
@@ -322,24 +357,10 @@ Run-Step "RetroArch config" {
             if ($c.Set.Count) { Backup-File $p[0]; Set-CfgValues $p[0] $c.Set }
             $n += $c.Set.Count; $kept += $c.Kept
         }
-        Set-PresetDone "retroarch"
+        Set-PresetDone "retroarch" ($n -gt 0)
         Say-RdUpdate "RetroArch" $n $kept
     }
-    # percorsi (come retroarch/component_prepare.sh), riallineati ad ogni esecuzione
-    Set-CfgValues $cfg ([ordered]@{
-        savefile_directory         = $Paths.saves
-        savestate_directory        = $Paths.states
-        screenshot_directory       = Join-Path $Paths.screenshots "retroarch"
-        recording_output_directory = Join-Path $Paths.videos "retroarch"
-        log_dir                    = $Paths.logs
-        rgui_browser_directory     = $Paths.roms
-        cheat_database_path        = Join-Path $Paths.cheats "retroarch"
-        audio_filter_dir           = Join-Path $Paths.shaders "retroarch\filters\audio"
-        video_filter_dir           = Join-Path $Paths.shaders "retroarch\filters\video"
-        video_shader_dir           = Join-Path $Paths.shaders "retroarch\shaders"
-        overlay_directory          = Join-Path $Paths.borders "retroarch"
-        system_directory           = $Paths.bios
-    })
+    Set-CfgValues $cfg $RaPaths
     Set-Junction (Join-Path $Paths.logs "retroarch") (Join-Path $ra "logs")
     # shaders, filtri e bordi (retroarch_updater di RetroDECK): presi dal pacchetto RetroArch
     foreach ($pair in @(
@@ -361,40 +382,23 @@ Run-Step "RetroArch config" {
 
 # ---------------- DuckStation: impostazioni RetroDECK ----------------
 Run-Step "DuckStation config" {
-    $ds  = Join-Path $Emu "DuckStation"
-    $ini = Join-Path $ds "settings.ini"
-    if (-not (Get-ChildItem $ds -Filter "duckstation-qt*.exe" -ErrorAction SilentlyContinue)) { throw "DuckStation non installato" }
+    $ini = Join-Path $DsDir "settings.ini"
+    if (-not (Get-ProgramExe "DuckStation")) { throw "DuckStation non installato" }
     $mode = Get-PresetMode "duckstation"
     if ($mode -eq "full") {
         $vals = @(ConvertTo-Triples (Get-RdDuckStation $RdCommit))
         Backup-File $ini
         Set-IniValues $ini $vals
-        Set-PresetDone "duckstation"
+        Set-PresetDone "duckstation" $true
         Say "Impostazioni RetroDECK applicate a DuckStation ($($vals.Count) voci)"
     } elseif ($mode -eq "merge") {
         $cur = if (Test-Path $ini) { ConvertTo-IniDict @(Read-IniTriples $ini) } else { @{} }
         $c = Get-RdChanges (Get-RdDuckStation (Get-PresetCommit "duckstation")) (Get-RdDuckStation $RdCommit) $cur
         if ($c.Set.Count) { Backup-File $ini; Set-IniValues $ini @(ConvertTo-Triples $c.Set) }
-        Set-PresetDone "duckstation"
+        Set-PresetDone "duckstation" ($c.Set.Count -gt 0)
         Say-RdUpdate "DuckStation" $c.Set.Count $c.Kept
     }
-    $mc = Join-Path $Paths.saves "psx\duckstation\memcards"
-    $folders = [ordered]@{
-        SaveStates  = Join-Path $Paths.states "psx\duckstation"
-        Screenshots = Join-Path $Paths.screenshots "Duckstation"
-        Shaders     = Join-Path $Paths.shaders "Duckstation"
-        Textures    = Join-Path $Paths.texture_packs "Duckstation\textures"
-    }
-    # percorsi (come duckstation/component_prepare.sh); DuckStation moderna li
-    # gestisce con la sezione [Folders] invece dei collegamenti della versione Legacy
-    $t = @(
-        @("BIOS", "SearchDirectory", $Paths.bios),
-        @("MemoryCards", "Card1Path", (Join-Path $mc "shared_card_1.mcd")),
-        @("MemoryCards", "Card2Path", (Join-Path $mc "shared_card_2.mcd")),
-        @("MemoryCards", "Directory", $mc),
-        @("GameList", "RecursivePaths", (Join-Path $Paths.roms "psx")))
-    foreach ($k in $folders.Keys) { $t += ,@("Folders", $k, $folders[$k]) }
-    Set-IniValues $ini $t
+    Set-IniValues $ini @(ConvertTo-Triples $DsPaths)
 }
 
 # ---------------- Personalizzazioni RetroWin ----------------
@@ -416,8 +420,8 @@ Run-Step "Personalizzazioni" {
     $stampFile = Join-Path $Preset "custom.txt"
     if (-not ($ResetConfig -or $script:PresetApplied -or (Get-Stamp $stampFile) -ne $stamp)) { Say "Personalizzazioni gia' applicate"; return }
 
-    $ra = Join-Path $Emu "RetroArch"
-    if (Test-Path (Join-Path $ra "retroarch.exe")) {
+    $ra = $RaDir
+    if (Get-ProgramExe "RetroArch") {
         foreach ($n in @("retroarch.cfg", "retroarch-core-options.cfg")) {
             $src = Join-Path $ov $n
             if (-not (Test-Path $src)) { continue }
@@ -439,13 +443,13 @@ Run-Step "Personalizzazioni" {
         }
     }
     $src = Join-Path $ov "duckstation.ini"
-    $ini = Join-Path $Emu "DuckStation\settings.ini"
+    $ini = Join-Path $DsDir "settings.ini"
     if ((Test-Path $src) -and (Test-Path $ini)) {
         $v = @(Read-IniTriples $src)
         if ($v.Count) { Backup-File $ini; Set-IniValues $ini $v; Say "duckstation.ini: $($v.Count) voci" }
     }
     $src = Join-Path $ov "es_settings.xml"
-    $es = Join-Path $EsDeCfg "settings\es_settings.xml"
+    $es = $EsSettingsFile
     if ((Test-Path $src) -and (Test-Path $es)) {
         # i commenti XML possono contenere righe d'esempio: ignorati
         $v = Read-EsSettings ([regex]::Replace([IO.File]::ReadAllText($src), '(?s)<!--.*?-->', ''))
@@ -465,6 +469,7 @@ Run-Step "Personalizzazioni" {
 # graphics\splash.svg. Sorgente: splash.svg, oppure splash.png / splash.jpg che
 # viene incorporata (senza ricompressione) in un SVG; cercata in custom\branding
 # e poi in <Root>. Senza file sorgente si usa lo splash originale di ES-DE.
+# Rigenerato solo quando cambia il file sorgente (impronta in _preset\splash.txt).
 Run-Step "Splash screen" {
     $dst = Join-Path $EsDeCfg "resources\graphics\splash.svg"
     $src = foreach ($dir in @($Brand, $Root)) {
@@ -476,9 +481,13 @@ Run-Step "Splash screen" {
         else { Say "Nessuno splash.png/.svg: uso lo splash originale di ES-DE" }
         return
     }
+    $stampFile = Join-Path $Preset "splash.txt"
+    $stamp = "$src|$((Get-FileHash $src).Hash)"
+    if ((Test-Path $dst) -and (Get-Stamp $stampFile) -eq $stamp) { Say "Splash screen gia' aggiornato"; return }
     New-Dir (Split-Path $dst)
     if ($src -match '\.svg$') { Copy-Item $src $dst -Force }
     else { New-SvgFromImage $src $dst }
+    Set-Stamp $stampFile $stamp
     Say "Splash screen: $(Split-Path $src -Leaf) -> $dst"
 }
 
@@ -489,8 +498,8 @@ Run-Step "Splash screen" {
 #   - altrimenti generata da custom\branding\RetroWin.png (solo se cambia);
 #   - altrimenti quella gia' presente in <Root>, o quella di ES-DE.
 Run-Step "Collegamento RetroWin" {
-    $exe = Join-Path $EsDeApp "ES-DE.exe"
-    if (-not (Test-Path $exe)) { throw "ES-DE non installato" }
+    $exe = (Get-ProgramExe "ES-DE").FullName
+    if (-not $exe) { throw "ES-DE non installato" }
     $ico = Join-Path $Root "RetroWin.ico"
     $bIco = Join-Path $Brand "RetroWin.ico"
     $bPng = Join-Path $Brand "RetroWin.png"
@@ -529,55 +538,44 @@ Run-Step "Collegamento RetroWin" {
 
 # ---------------- Verifica ----------------
 # Ogni exe nel percorso atteso e valido (header MZ), impostazioni chiave al loro posto.
-$Expected = [ordered]@{
-    "ES-DE"       = "Apps\ES-DE\ES-DE.exe"
-    "RetroArch"   = "Apps\Emulators\RetroArch\retroarch.exe"
-    "DuckStation" = "Apps\Emulators\DuckStation\duckstation-qt*.exe"
-}
-if (-not $SkipPCSX2) { $Expected["PCSX2"] = "Apps\Emulators\PCSX2\pcsx2-qt.exe" }
 $exeLines = @()
-foreach ($k in $Expected.Keys) {
-    $f = Get-Item -Path (Join-Path $Root $Expected[$k]) -ErrorAction SilentlyContinue | Select-Object -First 1
+foreach ($k in $Prog.Keys) {
+    if ($k -eq "PCSX2" -and $SkipPCSX2) { continue }
+    $f = Get-ProgramExe $k
     $state = "MANCANTE"
     if ($f) {
         $fs = [IO.File]::OpenRead($f.FullName)
         try { $b = New-Object byte[] 2; [void]$fs.Read($b, 0, 2) } finally { $fs.Close() }
         $state = if ($b[0] -eq 0x4D -and $b[1] -eq 0x5A) { "OK" } else { "NON VALIDO" }
         $rel = $f.FullName.Substring($Root.Length)
-    } else { $rel = "\" + $Expected[$k] }
+    } else { $rel = (Join-Path $Prog[$k].Dir $Prog[$k].Exe).Substring($Root.Length) }
     $exeLines += ("  {0,-12} {1,-10} {2}" -f $k, $state, $rel)
     if ($state -ne "OK" -and $Results[$k] -eq "OK") { $Results[$k] = "ERRORE: eseguibile $state ($rel)" }
 }
 
+# Valori attesi ($expected) confrontati con quelli letti dal file: una riga per gruppo.
 $cfgLines = @()
-function Add-Check($label, $actual, $expected) {
-    $ok = if ($actual -eq $expected) { "OK" } else { "DIVERSO" }
-    $script:cfgLines += ("  {0,-34} {1,-8} {2}" -f $label, $ok, $actual)
+function Add-Check($label, $expected, $actual) {
+    $bad = @($expected.Keys | Where-Object { "$($actual[$_])" -ne "$($expected[$_])" })
+    $ok = if ($bad.Count) { "DIVERSO" } else { "OK" }
+    $detail = if ($bad.Count) { ($bad -replace "`t", "/") -join ", " } else { "$($expected.Count) voci" }
+    $script:cfgLines += ("  {0,-32} {1,-8} {2}" -f $label, $ok, $detail)
 }
-$esF = Join-Path $EsDeCfg "settings\es_settings.xml"
-if (Test-Path $esF) {
-    $esT = [IO.File]::ReadAllText($esF)
-    foreach ($n in @("ROMDirectory", "MediaDirectory", "UserThemeDirectory", "Theme")) {
-        $m = [regex]::Match($esT, '<string name="' + $n + '" value="([^"]*)"')
-        $exp = @{ ROMDirectory = $Paths.roms; MediaDirectory = $Paths.downloaded_media; UserThemeDirectory = $Paths.themes; Theme = $RdThemeName }[$n]
-        Add-Check "ES-DE $n" $m.Groups[1].Value $exp
-    }
+if (Test-Path $EsSettingsFile) {
+    $es = Read-EsSettings ([IO.File]::ReadAllText($EsSettingsFile))
+    $act = @{}
+    foreach ($k in $es.Keys) { $act[$k] = [Net.WebUtility]::HtmlDecode(($es[$k] -split '\|', 2)[1]) }
+    Add-Check "ES-DE percorsi" $EsDePaths $act
+    Add-Check "ES-DE tema" @{ Theme = $RdThemeName } $act
 }
-$raF = Join-Path $Emu "RetroArch\retroarch.cfg"
+$raF = Join-Path $RaDir "retroarch.cfg"
 if (Test-Path $raF) {
-    $raC = Read-Cfg $raF
-    Add-Check "RetroArch system_directory" $raC["system_directory"] $Paths.bios
-    Add-Check "RetroArch savefile_directory" $raC["savefile_directory"] $Paths.saves
-    Add-Check "RetroArch savestate_directory" $raC["savestate_directory"] $Paths.states
-    Add-Check "RetroArch sort_savefiles_by_content" $raC["sort_savefiles_by_content_enable"] "true"
+    $act = Read-Cfg $raF
+    Add-Check "RetroArch percorsi" $RaPaths $act
+    Add-Check "RetroArch salvataggi per sistema" @{ sort_savefiles_by_content_enable = "true" } $act
 }
-$dsF = Join-Path $Emu "DuckStation\settings.ini"
-if (Test-Path $dsF) {
-    $dsT = Read-IniTriples $dsF
-    $get = { param($s, $k) ($dsT | Where-Object { $_[0] -eq $s -and $_[1] -eq $k } | Select-Object -First 1)[2] }
-    Add-Check "DuckStation BIOS SearchDirectory" (& $get "BIOS" "SearchDirectory") $Paths.bios
-    Add-Check "DuckStation Folders SaveStates" (& $get "Folders" "SaveStates") (Join-Path $Paths.states "psx\duckstation")
-}
+$dsF = Join-Path $DsDir "settings.ini"
+if (Test-Path $dsF) { Add-Check "DuckStation percorsi" $DsPaths (ConvertTo-IniDict @(Read-IniTriples $dsF)) }
 
 # ---------------- Report ----------------
 $report = Join-Path $Root "report_struttura.txt"
@@ -602,7 +600,7 @@ Get-ChildItem -Path $Root -Depth 1 -Directory -ErrorAction SilentlyContinue |
 $lines += "  \roms\ : $(@(Get-ChildItem $Paths.roms -Directory -ErrorAction SilentlyContinue).Count) cartelle sistema"
 $lines += ""
 $lines += "CORE"
-Get-ChildItem -Path (Join-Path $Emu "RetroArch\cores") -Filter "*.dll" -ErrorAction SilentlyContinue |
+Get-ChildItem -Path (Join-Path $RaDir "cores") -Filter "*.dll" -ErrorAction SilentlyContinue |
     ForEach-Object { $lines += "  " + $_.Name }
 $lines | Set-Content -Path $report -Encoding UTF8
 

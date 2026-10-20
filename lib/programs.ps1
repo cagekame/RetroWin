@@ -63,5 +63,11 @@ function Get-ReleaseAsset($api, $rx, $what) {
     return $rel, $a
 }
 
+# Eseguibile di un programma della tabella $Prog ($null se non e' installato).
+function Get-ProgramExe($name) {
+    $p = $Prog[$name]
+    return Get-ChildItem -Path $p.Dir -Filter $p.Exe -File -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
 # Indirizzo di un file di una versione stabile di RetroArch per Windows x64.
 function Get-RetroArchUrl($v, $file) { return "$RetroArchStableIndex$v/windows/x86_64/$file" }

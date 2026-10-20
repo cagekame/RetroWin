@@ -27,39 +27,56 @@ function Set-CfgValues($file, $values) {
 
 # settings.ini (DuckStation): [Sezione] + righe  Chiave = Valore
 function Read-IniTriples($file) {
-    $sec = ""; $out = @()
+    $sec = ""; $out = New-Object System.Collections.Generic.List[object]
     foreach ($l in [IO.File]::ReadAllLines($file)) {
         if ($l -match '^\s*\[(.+)\]\s*$') { $sec = $matches[1]; continue }
-        if ($l -match '^\s*([^=;#\[]+?)\s*=\s?(.*)$') { $out += ,@($sec, $matches[1], $matches[2]) }
+        if ($l -match '^\s*([^=;#\[]+?)\s*=\s?(.*)$') { $out.Add(@($sec, $matches[1], $matches[2])) }
     }
-    return $out
+    return $out.ToArray()
 }
+# Il file viene diviso in blocchi (righe prima della prima sezione, poi una
+# sezione per blocco) con un indice delle chiavi: ogni voce si trova subito,
+# senza rileggere il file. Le voci nuove vanno in fondo alla loro sezione.
 function Set-IniValues($file, $triples) {
-    $lines = New-Object System.Collections.Generic.List[string]
-    if (Test-Path $file) { $lines.AddRange([string[]][IO.File]::ReadAllLines($file)) }
+    $blocks = New-Object System.Collections.Generic.List[object]
+    $cur = New-Object System.Collections.Generic.List[string]
+    $blocks.Add($cur)
+    $secIdx = @{}   # sezione -> blocco (la prima, se ripetuta)
+    if (Test-Path $file) {
+        foreach ($l in [IO.File]::ReadAllLines($file)) {
+            if ($l -match '^\s*\[(.+)\]\s*$') {
+                $cur = New-Object System.Collections.Generic.List[string]
+                $blocks.Add($cur)
+                if (-not $secIdx.ContainsKey($matches[1])) { $secIdx[$matches[1]] = $cur }
+            }
+            $cur.Add($l)
+        }
+    }
+    $keyIdx = @{}   # sezione -> @{ chiave -> riga nel blocco }
     foreach ($t in $triples) {
         $sec = $t[0]; $key = $t[1]; $new = "$($t[1]) = $($t[2])"
-        $start = -1; $end = $lines.Count
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '^\s*\[(.+)\]\s*$') {
-                if ($start -ge 0) { $end = $i; break }
-                if ($matches[1] -eq $sec) { $start = $i }
-            }
+        $b = $secIdx[$sec]
+        if (-not $b) {
+            $last = $blocks[$blocks.Count - 1]
+            if ($last.Count -gt 0 -and $last[$last.Count - 1].Trim() -ne "") { $last.Add("") }
+            $b = New-Object System.Collections.Generic.List[string]
+            $b.Add("[$sec]")
+            $blocks.Add($b); $secIdx[$sec] = $b
         }
-        if ($start -lt 0) {
-            if ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Trim() -ne "") { $lines.Add("") }
-            $lines.Add("[$sec]"); $lines.Add($new); continue
+        if (-not $keyIdx.ContainsKey($sec)) {
+            $k = @{}
+            for ($i = $b.Count - 1; $i -ge 1; $i--) { if ($b[$i] -match '^\s*([^=;#\[]+?)\s*=') { $k[$matches[1]] = $i } }
+            $keyIdx[$sec] = $k
         }
-        $found = $false
-        for ($i = $start + 1; $i -lt $end; $i++) {
-            if ($lines[$i] -match '^\s*([^=;#\[]+?)\s*=' -and $matches[1] -eq $key) { $lines[$i] = $new; $found = $true; break }
-        }
-        if (-not $found) {
-            $ins = $end
-            while ($ins -gt $start + 1 -and $lines[$ins - 1].Trim() -eq "") { $ins-- }
-            $lines.Insert($ins, $new)
-        }
+        $k = $keyIdx[$sec]
+        if ($k.ContainsKey($key)) { $b[$k[$key]] = $new; continue }
+        # dopo le righe vuote finali ci sono solo righe vuote: gli indici gia' salvati non cambiano
+        $ins = $b.Count
+        while ($ins -gt 1 -and $b[$ins - 1].Trim() -eq "") { $ins-- }
+        $b.Insert($ins, $new); $k[$key] = $ins
     }
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($b in $blocks) { $lines.AddRange($b) }
     [IO.File]::WriteAllLines($file, $lines)
 }
 
@@ -122,8 +139,9 @@ function Say-RdUpdate($what, $n, $kept) {
     if ($kept) { $m += ", $kept lasciate come le avevi modificate" }
     Say $m
 }
-function Set-PresetDone($name) {
-    $script:PresetApplied = $true   # le personalizzazioni vanno riapplicate sopra
+# $changed: le impostazioni sono cambiate, quindi le personalizzazioni vanno riapplicate sopra.
+function Set-PresetDone($name, [bool]$changed) {
+    if ($changed) { $script:PresetApplied = $true }
     Set-Stamp (Join-Path $Preset "$name.txt") "Impostazioni RetroDECK (components $RdCommit) applicate il $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
 }
 

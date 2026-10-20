@@ -50,10 +50,13 @@ if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
 Expand-Archive -Path $zip -DestinationPath $dir -Force
 $script = Get-ChildItem $dir -Recurse -Filter "install_retro_windows.ps1" | Select-Object -First 1
 if (-not $script) { throw "install_retro_windows.ps1 non trovato nel progetto scaricato" }
+# resta solo la versione appena scaricata (lo zip non serve piu')
+$keep = ($Ref -split '[\\/]')[0]   # un ramo come "prove/x" sta in _setup\prove\x
+Get-ChildItem $setup | Where-Object { $_.Name -ne $keep } | Remove-Item -Recurse -Force
 
+# le opzioni -Switch ricevute passano tali e quali a install_retro_windows.ps1
 $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script.FullName, "-Root", $Root)
-if ($SkipPCSX2)         { $a += "-SkipPCSX2" }
-if ($Force)             { $a += "-Force" }
-if ($ResetConfig)       { $a += "-ResetConfig" }
-if ($NoDesktopShortcut) { $a += "-NoDesktopShortcut" }
+foreach ($k in $PSBoundParameters.Keys) {
+    if ($PSBoundParameters[$k] -is [Management.Automation.SwitchParameter] -and $PSBoundParameters[$k]) { $a += "-$k" }
+}
 & powershell.exe @a
