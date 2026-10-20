@@ -125,6 +125,22 @@ I percorsi (ROM, BIOS, salvataggi...) li gestisce lo script: non vanno messi neg
 - Icona e splash screen RetroWin.
 - Loghi RetroWin nel tema ES-DE (`custom/files/ES-DE/themes/RetroDECK-theme-main/core/images/`).
 
+## Struttura del progetto
+
+```
+bootstrap.ps1               scarica il progetto da GitHub e lancia l'installazione
+install_retro_windows.ps1   configurazione e passi dell'installazione
+lib/
+  common.ps1                messaggi, cartelle, download, archivi, collegamenti, backup
+  config.ps1                file di impostazioni e aggiornamento delle impostazioni RetroDECK
+  programs.ps1              installazione e aggiornamento dei programmi
+  branding.ps1              icona e splash screen
+custom/                     personalizzazioni RetroWin (vedi sopra)
+```
+
+`install_retro_windows.ps1` ha bisogno di `lib/` e `custom/` accanto: va lanciato dalla
+copia completa del progetto (`bootstrap.ps1` la scarica da solo).
+
 ## Nuova versione
 
 1. Modifica e prova in locale (`install_retro_windows.ps1`). Per seguire una
