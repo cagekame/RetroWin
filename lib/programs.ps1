@@ -41,7 +41,7 @@ function Update-Program($name, $dir, [string[]]$markers, [scriptblock]$resolve, 
             Say "$name $have piu' recente di $($r.Version): resta questa"; return
         }
     }
-    if ($present) { Say "${name}: aggiorno $(if ($have) { $have } else { 'versione precedente' }) -> $($r.Version)" }
+    if ($present) { Say "${name}: aggiorno $have -> $($r.Version)" }
     else { Say "$name $($r.Version)" }
     $z = Join-Path $Dl $r.File
     Get-File $r.Url $z

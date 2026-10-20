@@ -194,17 +194,6 @@ function Set-Junction($real, $link) {
     New-Item -ItemType Junction -Path $link -Value $realFull | Out-Null
 }
 
-# Rinomina una cartella cambiando solo maiuscole/minuscole (es. ROMs -> roms).
-function Rename-Case($parent, $name) {
-    $d = Get-ChildItem $parent -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name }
-    if ($d -and $d.Name -cne $name) {
-        $tmp = "$name.rename_tmp"
-        Rename-Item $d.FullName $tmp
-        Rename-Item (Join-Path $parent $tmp) $name
-        Say "Rinominata $($d.Name) in $name"
-    }
-}
-
 # Copia $f in <file>.<data>.bak e tiene solo gli ultimi $KeepBackups backup.
 function Backup-File($f) {
     if (-not (Test-Path $f)) { return }

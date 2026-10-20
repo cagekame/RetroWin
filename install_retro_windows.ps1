@@ -141,28 +141,7 @@ if ($running.Count -gt 0) {
 
 New-Dir $Root
 Say "Cartella di lavoro: $Root"
-
-# ---------------- Migrazione dalla vecchia struttura ----------------
-# Versioni precedenti: <Root>\ES-DE (programma), <Root>\Emulators, <Root>\_download,
-# <Root>\ROMs, <Root>\BIOS. Ora i programmi stanno in <Root>\Apps.
-Run-Step "Migrazione struttura" {
-    New-Dir $Apps
-    $oldEs = Join-Path $Root "ES-DE"
-    if ((Test-Path (Join-Path $oldEs "ES-DE.exe")) -and -not (Test-Path $EsDeApp)) {
-        Say "Sposto il programma ES-DE in Apps\ES-DE"
-        Move-Item $oldEs $EsDeApp
-    }
-    foreach ($pair in @(@("Emulators", $Emu), @("_download", $Dl))) {
-        $old = Join-Path $Root $pair[0]
-        if (Test-Path $old) {
-            if (-not (Test-Path $pair[1])) { Say "Sposto $($pair[0]) in Apps\$($pair[0])"; Move-Item $old $pair[1] }
-            else { Warn "Esistono sia $old che $($pair[1]): controlla a mano" }
-        }
-    }
-    Rename-Case $Root "roms"
-    Rename-Case $Root "bios"
-}
-New-Dir $Dl; New-Dir $Emu
+New-Dir $Apps; New-Dir $Dl; New-Dir $Emu
 
 # ---------------- ES-DE ----------------
 Run-Step "ES-DE" {
@@ -192,7 +171,7 @@ Run-Step "RetroArch" {
             if (-not $v) { throw "Non riesco a leggere le versioni stabili di RetroArch da $RetroArchStableIndex" }
         }
         return @{ Version = "$v"; Url = (Get-RetroArchUrl $v "RetroArch.7z"); File = "RetroArch-$v.7z" }
-    } @("RetroArch-*.7z", "RetroArch.7z")
+    } @("RetroArch-*.7z")
     # retroarch.cfg accanto all'exe: su Windows RetroArch lo usa (modalita' portable)
     New-EmptyFile (Join-Path $dest "retroarch.cfg")
 }
@@ -208,7 +187,7 @@ Run-Step "Core libretro" {
     # un core a caso basta come "eseguibile": serve solo a sapere se ci sono gia'
     Update-Program "Core RetroArch" $coresDir @("*_libretro.dll") {
         return @{ Version = $v; Url = (Get-RetroArchUrl $v "RetroArch_cores.7z"); File = "RetroArch_cores-$v.7z" }
-    } @("RetroArch_cores-*.7z", "*_libretro.dll.zip")
+    } @("RetroArch_cores-*.7z")
     Say "Core installati: $(@(Get-ChildItem $coresDir -Filter '*_libretro.dll').Count)"
 }
 
@@ -264,13 +243,6 @@ Run-Step "Cartelle RetroDECK" {
     Set-Junction (Join-Path $Paths.mods    "retroarch-core\fbneo\patched")  (Join-Path $Paths.bios "fbneo\patched")
     Set-Junction (Join-Path $Paths.mods    "retroarch-core\fbneo\ips")      (Join-Path $Paths.bios "fbneo\ips")
     Set-Junction (Join-Path $Paths.mods    "retroarch-core\fbneo\romdata")  (Join-Path $Paths.bios "fbneo\romdata")
-    # BIOS gia' messi nelle cartelle dei singoli emulatori: copiati in bios (originali lasciati)
-    foreach ($old in @((Join-Path $Emu "DuckStation\bios"), (Join-Path $Emu "RetroArch\system"))) {
-        if (Test-HasFiles $old) {
-            Copy-Tree $old $Paths.bios -OnlyNew
-            Say "BIOS copiati da $old in $($Paths.bios)"
-        }
-    }
 }
 
 # ---------------- ES-DE: impostazioni RetroDECK ----------------
@@ -306,8 +278,7 @@ Run-Step "ES-DE config" {
     # tema RetroDECK
     $theme = Join-Path $Paths.themes $RdThemeName
     $tv = [IO.Path]::GetFileNameWithoutExtension($RdThemeUrl).Substring(0, 8)   # commit del tema
-    if ((Test-Path (Join-Path $theme "theme.xml")) -and ((Get-Installed $theme) -in @($tv, "")) -and -not $Force) {
-        if (-not (Get-Installed $theme)) { Set-Installed $theme $tv }
+    if ((Test-Path (Join-Path $theme "theme.xml")) -and (Get-Installed $theme) -eq $tv -and -not $Force) {
         Say "Tema $RdThemeName gia' presente"
     } else {
         $z = Join-Path $Dl "RetroDECK-theme-$tv.zip"
@@ -386,16 +357,6 @@ Run-Step "RetroArch config" {
         Expand-Any $z $ch
         Say "Cheat installati in $ch"
     }
-    # vecchi salvataggi RetroArch (prima erano ordinati per core, ora per sistema):
-    # copiati in backups, da spostare a mano in saves\<sistema> / states\<sistema>
-    foreach ($d in @("saves", "states")) {
-        $old = Join-Path $ra $d
-        if (Test-HasFiles $old) {
-            $bk = Join-Path $Paths.backups "retroarch-pre-retrodeck\$d"
-            Copy-Tree $old $bk -OnlyNew
-            Warn "Trovati vecchi $d di RetroArch: copiati in $bk (spostali in $d\<sistema>)"
-        }
-    }
 }
 
 # ---------------- DuckStation: impostazioni RetroDECK ----------------
@@ -423,15 +384,6 @@ Run-Step "DuckStation config" {
         Screenshots = Join-Path $Paths.screenshots "Duckstation"
         Shaders     = Join-Path $Paths.shaders "Duckstation"
         Textures    = Join-Path $Paths.texture_packs "Duckstation\textures"
-    }
-    # contenuto delle vecchie cartelle interne (memcards, savestates...) spostato nelle nuove
-    $moves = @(@("memcards", $mc)) + @($folders.Keys | ForEach-Object { ,@($_.ToLower(), $folders[$_]) })
-    foreach ($m in $moves) {
-        $old = Join-Path $ds $m[0]
-        if (Test-HasFiles $old) {
-            if (-not (Move-Content $old $m[1])) { Warn "Alcuni file in $old esistono gia' in $($m[1]): lasciati dove sono" }
-            else { Say "Spostato il contenuto di $($m[0]) in $($m[1])" }
-        }
     }
     # percorsi (come duckstation/component_prepare.sh); DuckStation moderna li
     # gestisce con la sezione [Folders] invece dei collegamenti della versione Legacy

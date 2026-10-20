@@ -92,11 +92,9 @@ function Set-EsSettings([string]$txt, $values) {
 # -ResetConfig); quando cambia $RdCommit si aggiornano solo le voci cambiate.
 # Commit RetroDECK delle impostazioni gia' applicate ("" = mai applicate).
 function Get-PresetCommit($name) {
-    $f = Join-Path $Preset "$name.txt"
-    if (-not (Test-Path $f)) { return "" }
-    $m = [regex]::Match((Get-Content $f -Raw), 'components ([0-9a-f]{40})')
+    $m = [regex]::Match((Get-Stamp (Join-Path $Preset "$name.txt")), 'components ([0-9a-f]{40})')
     if ($m.Success) { return $m.Groups[1].Value }
-    return $RdCommit   # formato sconosciuto: considerate gia' attuali
+    return ""
 }
 # "full" = applica tutto, "merge" = aggiorna dal commit precedente, "" = niente da fare
 function Get-PresetMode($name) {
