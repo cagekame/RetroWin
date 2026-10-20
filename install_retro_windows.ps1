@@ -83,8 +83,8 @@ $RdFiles   = [ordered]@{
 $RdThemeUrl  = "https://github.com/RetroDECK/RetroDECK-theme/archive/c50205283cbb4a1bb2b05c11e897cf129f23f076.zip"
 $RdThemeName = "RetroDECK-theme-main"   # nome usato da RetroDECK in es_settings.xml
 
-# Core libretro: tutti quelli del pacchetto RetroArch_cores.7z della stessa
-# versione stabile di RetroArch (come RetroDECK, che include tutti i core).
+# Backup .bak tenuti per ogni file di impostazioni (i piu' vecchi vengono tolti).
+$KeepBackups = 3
 # ----------------------------------------------------------------
 
 # Personalizzazioni RetroWin rispetto a RetroDECK (vedi README.md)
@@ -124,6 +124,22 @@ function Say($m)  { Write-Host "[*] $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 
 function New-Dir($p) { if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null } }
+function New-EmptyFile($p) { if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p | Out-Null } }
+
+# $true se nella cartella (o nelle sottocartelle) c'e' almeno un file, anche nascosto.
+function Test-HasFiles($dir) {
+    return [bool](Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+# Piccoli file di testo con un solo valore (versione installata, impronta...): "" se mancano.
+function Get-Stamp($file) {
+    if (Test-Path $file) { return "$(Get-Content $file -TotalCount 1)".Trim() }
+    return ""
+}
+function Set-Stamp($file, $value) {
+    New-Dir (Split-Path $file)
+    Set-Content -Path $file -Value $value -Encoding ASCII
+}
 
 # 7-Zip senza installare nulla (per verifiche/estrazioni veloci se c'e' gia').
 function Get-7zPath {
@@ -219,19 +235,45 @@ function Copy-Tree($src, $dst, [switch]$OnlyNew) {
     if ($LASTEXITCODE -ge 8) { throw "Copia da $src a $dst fallita (robocopy codice $LASTEXITCODE)" }
 }
 
+# Porta il contenuto di $src in $dst. Se $dst non c'e' o e' vuota basta rinominare
+# la cartella (istantaneo, nessuna copia dei dati); altrimenti i file vengono uniti
+# con robocopy (sovrascrive, non cancella nulla in $dst, regge i percorsi lunghi).
+function Move-Tree($src, $dst) {
+    $di = Get-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+    if ($di) {
+        if (($di.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            (Get-ChildItem -LiteralPath $dst -Force | Select-Object -First 1)) { Copy-Tree $src $dst; return }
+        Remove-Item -LiteralPath $dst -Force
+    }
+    New-Dir (Split-Path $dst)
+    try { [IO.Directory]::Move($src, $dst) }
+    catch { Copy-Tree $src $dst }   # dischi diversi: si copia
+}
+
+# Cancella una cartella temporanea anche con percorsi oltre 260 caratteri (dove
+# Remove-Item fallisce): robocopy la svuota specchiando una cartella vuota.
+function Remove-Tree($dir) {
+    if (-not (Test-Path $dir)) { return }
+    $empty = Join-Path $Dl "_empty"
+    New-Dir $empty
+    & robocopy.exe $empty $dir /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+    Remove-Item $dir -Recurse -Force
+    Remove-Item $empty -Force
+}
+
 # Estrae in una cartella temporanea, trova la cartella che contiene uno dei
-# file $markerNames e ne copia il contenuto in $dest (unisce/sovrascrive, non
+# file $markerNames e ne sposta il contenuto in $dest (unisce/sovrascrive, non
 # cancella nulla di cio' che c'e' gia' in $dest: impostazioni, salvataggi restano).
 function Install-Archive($archive, $dest, [string[]]$markerNames) {
     $tmp = Join-Path $Dl (([IO.Path]::GetFileNameWithoutExtension($archive)) + "_tmp")
-    if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+    Remove-Tree $tmp
     Say "Estraggo $(Split-Path $archive -Leaf)"
     Expand-Any $archive $tmp
     $f = Get-ChildItem -Path $tmp -Recurse -Include $markerNames -File -ErrorAction SilentlyContinue |
         Sort-Object { $_.FullName.Length } | Select-Object -First 1
     if (-not $f) { throw "Non trovo $($markerNames -join ' / ') dentro $(Split-Path $archive -Leaf)" }
-    Copy-Tree $f.DirectoryName $dest
-    Remove-Item $tmp -Recurse -Force
+    Move-Tree $f.DirectoryName $dest
+    Remove-Tree $tmp   # gia' assente se e' stata spostata tutta
     return (Join-Path $dest $f.Name)
 }
 
@@ -242,7 +284,7 @@ function Move-Content($src, $dst) {
     & robocopy.exe $src $dst /E /MOVE /XC /XN /XO /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "Spostamento da $src a $dst fallito (robocopy codice $LASTEXITCODE)" }
     if (Test-Path $src) {
-        if (Get-ChildItem $src -Recurse -File -Force -ErrorAction SilentlyContinue) { return $false }
+        if (Test-HasFiles $src) { return $false }
         Remove-Item $src -Recurse -Force
     }
     return $true
@@ -344,19 +386,41 @@ function Set-IniValues($file, $triples) {
 }
 
 # es_settings.xml (ES-DE): righe  <tipo name="Nome" value="Valore" />
+$EsLineRx = '<(bool|int|float|string) name="([^"]+)" value="([^"]*)"\s*/>'
 function Set-EsSetting([string]$txt, $type, $name, $value) {
     $line = "<$type name=`"$name`" value=`"$([Security.SecurityElement]::Escape($value))`" />"
     $rx = '<(bool|int|float|string) name="' + [regex]::Escape($name) + '" value="[^"]*"\s*/>'
     if ([regex]::IsMatch($txt, $rx)) { return [regex]::Replace($txt, $rx, { param($m) $line }.GetNewClosure()) }
     return $txt.TrimEnd() + "`r`n" + $line + "`r`n"
 }
-
-function Backup-File($f) {
-    if (Test-Path $f) {
-        $b = "$f." + (Get-Date -Format "yyyyMMdd_HHmmss") + ".bak"
-        Copy-Item $f $b
-        Say "Backup: $(Split-Path $b -Leaf)"
+# Nome -> "tipo|valore" (valore come scritto nel file)
+function Read-EsSettings([string]$txt) {
+    $d = [ordered]@{}
+    foreach ($m in [regex]::Matches($txt, $EsLineRx)) {
+        $d[$m.Groups[2].Value] = $m.Groups[1].Value + "|" + $m.Groups[3].Value
     }
+    return $d
+}
+# Applica a $txt le voci lette con Read-EsSettings.
+function Set-EsSettings([string]$txt, $values) {
+    foreach ($k in $values.Keys) {
+        $tv = $values[$k] -split '\|', 2
+        $txt = Set-EsSetting $txt $tv[0] $k ([Net.WebUtility]::HtmlDecode($tv[1]))
+    }
+    return $txt
+}
+
+# Copia $f in <file>.<data>.bak e tiene solo gli ultimi $KeepBackups backup.
+function Backup-File($f) {
+    if (-not (Test-Path $f)) { return }
+    $leaf = Split-Path $f -Leaf
+    $b = "$f." + (Get-Date -Format "yyyyMMdd_HHmmss") + ".bak"
+    Copy-Item $f $b
+    Say "Backup: $(Split-Path $b -Leaf)"
+    $rx = '^' + [regex]::Escape($leaf) + '\.\d{8}_\d{6}\.bak$'
+    Get-ChildItem -LiteralPath (Split-Path $f) -Filter "$leaf.*.bak" -File |
+        Where-Object { $_.Name -match $rx } | Sort-Object Name -Descending |
+        Select-Object -Skip $KeepBackups | Remove-Item -Force
 }
 
 # Le impostazioni RetroDECK si applicano per intero la prima volta (o con
@@ -397,9 +461,7 @@ function Say-RdUpdate($what, $n, $kept) {
 }
 function Set-PresetDone($name) {
     $script:PresetApplied = $true   # le personalizzazioni vanno riapplicate sopra
-    New-Dir $Preset
-    Set-Content -Path (Join-Path $Preset "$name.txt") -Encoding ASCII `
-        -Value "Impostazioni RetroDECK (components $RdCommit) applicate il $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    Set-Stamp (Join-Path $Preset "$name.txt") "Impostazioni RetroDECK (components $RdCommit) applicate il $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
 }
 
 # Impronta (SHA256) dei file di alcune cartelle: percorso relativo + contenuto.
@@ -527,22 +589,10 @@ function Get-RdEsDe($commit) {
     $txt = [IO.File]::ReadAllText((Get-RdFile "es_settings.xml" $commit))
     return (Set-EsSetting $txt "string" "ScreensaverSlideshowImageDir" "")   # percorso Linux
 }
-# es_settings.xml: Nome -> "tipo|valore" (valore come scritto nel file)
-function Read-EsSettings([string]$txt) {
-    $d = [ordered]@{}
-    foreach ($m in [regex]::Matches($txt, '<(bool|int|float|string) name="([^"]+)" value="([^"]*)"\s*/>')) {
-        $d[$m.Groups[2].Value] = $m.Groups[1].Value + "|" + $m.Groups[3].Value
-    }
-    return $d
-}
 
 # Versione installata di un programma (file retrowin_version.txt nella sua cartella).
-function Get-Installed($dir) {
-    $f = Join-Path $dir "retrowin_version.txt"
-    if (Test-Path $f) { return (Get-Content $f -TotalCount 1).Trim() }
-    return ""
-}
-function Set-Installed($dir, $v) { Set-Content -Path (Join-Path $dir "retrowin_version.txt") -Value $v -Encoding ASCII }
+function Get-Installed($dir) { return Get-Stamp (Join-Path $dir "retrowin_version.txt") }
+function Set-Installed($dir, $v) { Set-Stamp (Join-Path $dir "retrowin_version.txt") $v }
 
 # Installa o aggiorna un programma. $resolve restituisce @{ Version; Url; File }
 # (File = nome dell'archivio in _download). Se la rete non risponde e il programma
@@ -576,15 +626,18 @@ function Update-Program($name, $dir, [string[]]$markers, [scriptblock]$resolve, 
     }
 }
 
-function Get-GitHubAsset($repoApi, $patterns, $exclude) {
-    $rel = Invoke-RestMethod -Uri $repoApi -Headers @{ "User-Agent" = "RetroWinSetup" }
-    foreach ($pat in $patterns) {
-        $a = $rel.assets | Where-Object { $_.name -match $pat -and (-not $exclude -or $_.name -notmatch $exclude) } | Select-Object -First 1
-        if ($a) { return $a }
-    }
-    $names = ($rel.assets | ForEach-Object { $_.name }) -join "`n  "
-    throw "Nessun asset corrispondente. Asset disponibili:`n  $names"
+# Release letta da un'API GitHub o GitLab (GitLab elenca gli asset in assets.links)
+# e il suo primo asset il cui nome corrisponde a $rx. Uso: $rel, $a = Get-ReleaseAsset ...
+function Get-ReleaseAsset($api, $rx, $what) {
+    $rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "RetroWinSetup" }
+    $list = if ($rel.assets.PSObject.Properties["links"]) { $rel.assets.links } else { $rel.assets }
+    $a = $list | Where-Object { $_.name -match $rx } | Select-Object -First 1
+    if (-not $a) { throw "Asset $what non trovato nella release $($rel.tag_name)" }
+    return $rel, $a
 }
+
+# Indirizzo di un file di una versione stabile di RetroArch per Windows x64.
+function Get-RetroArchUrl($v, $file) { return "$RetroArchStableIndex$v/windows/x86_64/$file" }
 
 function Run-Step($name, [scriptblock]$block) {
     Write-Host ""
@@ -631,9 +684,7 @@ New-Dir $Dl; New-Dir $Emu
 Run-Step "ES-DE" {
     Update-Program "ES-DE" $EsDeApp @("ES-DE.exe") {
         try {
-            $rel = Invoke-RestMethod -Uri $EsDeReleaseApi -Headers @{ "User-Agent" = "RetroWinSetup" }
-            $a = $rel.assets.links | Where-Object { $_.name -match $EsDeAssetRegex } | Select-Object -First 1
-            if (-not $a) { throw "asset portable non trovato nell'ultima release" }
+            $rel, $a = Get-ReleaseAsset $EsDeReleaseApi $EsDeAssetRegex "portable"
             return @{ Version = $rel.tag_name; Url = $a.direct_asset_url; File = "ES-DE-$($rel.tag_name).zip" }
         } catch {
             if (Test-Path (Join-Path $EsDeApp "ES-DE.exe")) { throw }
@@ -656,11 +707,10 @@ Run-Step "RetroArch" {
                 ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Descending | Select-Object -First 1
             if (-not $v) { throw "Non riesco a leggere le versioni stabili di RetroArch da $RetroArchStableIndex" }
         }
-        return @{ Version = "$v"; Url = "$RetroArchStableIndex$v/windows/x86_64/RetroArch.7z"; File = "RetroArch-$v.7z" }
+        return @{ Version = "$v"; Url = (Get-RetroArchUrl $v "RetroArch.7z"); File = "RetroArch-$v.7z" }
     } @("RetroArch-*.7z", "RetroArch.7z")
     # retroarch.cfg accanto all'exe: su Windows RetroArch lo usa (modalita' portable)
-    $cfg = Join-Path $dest "retroarch.cfg"
-    if (-not (Test-Path $cfg)) { New-Item -ItemType File -Path $cfg | Out-Null }
+    New-EmptyFile (Join-Path $dest "retroarch.cfg")
 }
 
 # ---------------- Core libretro ----------------
@@ -673,7 +723,7 @@ Run-Step "Core libretro" {
     New-Dir $coresDir
     # un core a caso basta come "eseguibile": serve solo a sapere se ci sono gia'
     Update-Program "Core RetroArch" $coresDir @("*_libretro.dll") {
-        return @{ Version = $v; Url = "$RetroArchStableIndex$v/windows/x86_64/RetroArch_cores.7z"; File = "RetroArch_cores-$v.7z" }
+        return @{ Version = $v; Url = (Get-RetroArchUrl $v "RetroArch_cores.7z"); File = "RetroArch_cores-$v.7z" }
     } @("RetroArch_cores-*.7z", "*_libretro.dll.zip")
     Say "Core installati: $(@(Get-ChildItem $coresDir -Filter '*_libretro.dll').Count)"
 }
@@ -684,15 +734,12 @@ Run-Step "Core libretro" {
 Run-Step "DuckStation" {
     $dest = Join-Path $Emu "DuckStation"
     Update-Program "DuckStation" $dest @("duckstation-qt*.exe") {
-        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" -Headers @{ "User-Agent" = "RetroWinSetup" }
-        $a = $rel.assets | Where-Object { $_.name -match 'windows-x64-release\.zip$' } | Select-Object -First 1
-        if (-not $a) { throw "Asset Windows x64 non trovato nella release di DuckStation" }
+        $rel, $a = Get-ReleaseAsset "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" 'windows-x64-release\.zip$' "Windows x64 di DuckStation"
         $d = ([datetime]$rel.published_at).ToUniversalTime().ToString("yyyyMMdd-HHmm")
         return @{ Version = "latest-$d"; Url = $a.browser_download_url; File = "duckstation-$d.zip" }
     } @("duckstation-*.zip")
     # portable.txt => impostazioni accanto all'exe
-    $p = Join-Path $dest "portable.txt"
-    if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p | Out-Null }
+    New-EmptyFile (Join-Path $dest "portable.txt")
 }
 
 # ---------------- PCSX2 (opzionale) ----------------
@@ -703,13 +750,10 @@ if (-not $SkipPCSX2) {
         Update-Program "PCSX2" $dest @("pcsx2-qt.exe") {
             $v = (Get-RdVersions)["PCSX2"]
             $api = if ($v) { "https://api.github.com/repos/PCSX2/pcsx2/releases/tags/$v" } else { "https://api.github.com/repos/PCSX2/pcsx2/releases/latest" }
-            $rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "RetroWinSetup" }
-            $a = $rel.assets | Where-Object { $_.name -match 'windows-x64-Qt\.7z$' } | Select-Object -First 1
-            if (-not $a) { throw "Asset Windows x64 non trovato nella release $($rel.tag_name) di PCSX2" }
+            $rel, $a = Get-ReleaseAsset $api 'windows-x64-Qt\.7z$' "Windows x64 di PCSX2"
             return @{ Version = $rel.tag_name; Url = $a.browser_download_url; File = $a.name }
         } @("pcsx2-*.7z")
-        $p = Join-Path $dest "portable.ini"
-        if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p | Out-Null }
+        New-EmptyFile (Join-Path $dest "portable.ini")
     }
 } else {
     $Results["PCSX2"] = "saltato (-SkipPCSX2)"
@@ -738,7 +782,7 @@ Run-Step "Cartelle RetroDECK" {
     Set-Junction (Join-Path $Paths.mods    "retroarch-core\fbneo\romdata")  (Join-Path $Paths.bios "fbneo\romdata")
     # BIOS gia' messi nelle cartelle dei singoli emulatori: copiati in bios (originali lasciati)
     foreach ($old in @((Join-Path $Emu "DuckStation\bios"), (Join-Path $Emu "RetroArch\system"))) {
-        if ((Test-Path $old) -and (Get-ChildItem $old -Recurse -File -ErrorAction SilentlyContinue)) {
+        if (Test-HasFiles $old) {
             Copy-Tree $old $Paths.bios -OnlyNew
             Say "BIOS copiati da $old in $($Paths.bios)"
         }
@@ -760,14 +804,7 @@ Run-Step "ES-DE config" {
     } elseif ($mode -eq "merge") {
         $txt = [IO.File]::ReadAllText($f)
         $c = Get-RdChanges (Read-EsSettings (Get-RdEsDe (Get-PresetCommit "es-de"))) (Read-EsSettings (Get-RdEsDe $RdCommit)) (Read-EsSettings $txt)
-        if ($c.Set.Count) {
-            Backup-File $f
-            foreach ($k in $c.Set.Keys) {
-                $tv = $c.Set[$k] -split '\|', 2
-                $txt = Set-EsSetting $txt $tv[0] $k ([Net.WebUtility]::HtmlDecode($tv[1]))
-            }
-            [IO.File]::WriteAllText($f, $txt)
-        }
+        if ($c.Set.Count) { Backup-File $f; [IO.File]::WriteAllText($f, (Set-EsSettings $txt $c.Set)) }
         Set-PresetDone "es-de"
         Say-RdUpdate "ES-DE" $c.Set.Count $c.Kept
     }
@@ -855,12 +892,11 @@ Run-Step "RetroArch config" {
         @("filters",  (Join-Path $Paths.shaders "retroarch\filters")),
         @("overlays", (Join-Path $Paths.borders "retroarch\overlays")))) {
         $src = Join-Path $ra $pair[0]
-        $empty = -not (Get-ChildItem $pair[1] -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
-        if ((Test-Path $src) -and ($empty -or $ResetConfig)) { Copy-Tree $src $pair[1] -OnlyNew; Say "Copiati $($pair[0]) in $($pair[1])" }
+        if ((Test-Path $src) -and ($ResetConfig -or -not (Test-HasFiles $pair[1]))) { Copy-Tree $src $pair[1] -OnlyNew; Say "Copiati $($pair[0]) in $($pair[1])" }
     }
     # cheat (RetroDECK li fornisce gia' pronti): dal buildbot libretro
     $ch = Join-Path $Paths.cheats "retroarch"
-    if (-not (Get-ChildItem $ch -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1) -or $ResetConfig) {
+    if ($ResetConfig -or -not (Test-HasFiles $ch)) {
         $z = Join-Path $Dl "cheats.zip"
         Get-File $CheatsUrl $z
         Expand-Any $z $ch
@@ -870,7 +906,7 @@ Run-Step "RetroArch config" {
     # copiati in backups, da spostare a mano in saves\<sistema> / states\<sistema>
     foreach ($d in @("saves", "states")) {
         $old = Join-Path $ra $d
-        if ((Test-Path $old) -and (Get-ChildItem $old -Recurse -File -ErrorAction SilentlyContinue)) {
+        if (Test-HasFiles $old) {
             $bk = Join-Path $Paths.backups "retroarch-pre-retrodeck\$d"
             Copy-Tree $old $bk -OnlyNew
             Warn "Trovati vecchi $d di RetroArch: copiati in $bk (spostali in $d\<sistema>)"
@@ -908,7 +944,7 @@ Run-Step "DuckStation config" {
     $moves = @(@("memcards", $mc)) + @($folders.Keys | ForEach-Object { ,@($_.ToLower(), $folders[$_]) })
     foreach ($m in $moves) {
         $old = Join-Path $ds $m[0]
-        if ((Test-Path $old) -and (Get-ChildItem $old -Recurse -File -ErrorAction SilentlyContinue)) {
+        if (Test-HasFiles $old) {
             if (-not (Move-Content $old $m[1])) { Warn "Alcuni file in $old esistono gia' in $($m[1]): lasciati dove sono" }
             else { Say "Spostato il contenuto di $($m[0]) in $($m[1])" }
         }
@@ -942,8 +978,7 @@ Run-Step "Personalizzazioni" {
     $fs = Join-Path $Custom "files"
     $stamp = Get-TreeHash @($ov, $fs)
     $stampFile = Join-Path $Preset "custom.txt"
-    $old = if (Test-Path $stampFile) { Get-Content $stampFile -TotalCount 1 } else { "" }
-    if (-not ($ResetConfig -or $script:PresetApplied -or $old -ne $stamp)) { Say "Personalizzazioni gia' applicate"; return }
+    if (-not ($ResetConfig -or $script:PresetApplied -or (Get-Stamp $stampFile) -ne $stamp)) { Say "Personalizzazioni gia' applicate"; return }
 
     $ra = Join-Path $Emu "RetroArch"
     if (Test-Path (Join-Path $ra "retroarch.exe")) {
@@ -977,19 +1012,15 @@ Run-Step "Personalizzazioni" {
     $es = Join-Path $EsDeCfg "settings\es_settings.xml"
     if ((Test-Path $src) -and (Test-Path $es)) {
         # i commenti XML possono contenere righe d'esempio: ignorati
-        $o = [regex]::Replace([IO.File]::ReadAllText($src), '(?s)<!--.*?-->', '')
-        $m = [regex]::Matches($o, '<(bool|int|float|string) name="([^"]+)" value="([^"]*)"\s*/>')
-        if ($m.Count) {
+        $v = Read-EsSettings ([regex]::Replace([IO.File]::ReadAllText($src), '(?s)<!--.*?-->', ''))
+        if ($v.Count) {
             Backup-File $es
-            $txt = [IO.File]::ReadAllText($es)
-            foreach ($x in $m) { $txt = Set-EsSetting $txt $x.Groups[1].Value $x.Groups[2].Value ([Net.WebUtility]::HtmlDecode($x.Groups[3].Value)) }
-            [IO.File]::WriteAllText($es, $txt)
-            Say "es_settings.xml: $($m.Count) voci"
+            [IO.File]::WriteAllText($es, (Set-EsSettings ([IO.File]::ReadAllText($es)) $v))
+            Say "es_settings.xml: $($v.Count) voci"
         }
     }
     if (Test-Path $fs) { Copy-Tree $fs $Root; Say "File personalizzati copiati in $Root" }
-    New-Dir $Preset
-    Set-Content -Path $stampFile -Value $stamp -Encoding ASCII
+    Set-Stamp $stampFile $stamp
 }
 
 # ---------------- Splash screen ES-DE ----------------
@@ -1045,12 +1076,10 @@ Run-Step "Collegamento RetroWin" {
     } elseif (Test-Path $bPng) {
         $stampFile = Join-Path $Preset "icon.txt"
         $h = (Get-FileHash $bPng).Hash
-        $old = if (Test-Path $stampFile) { Get-Content $stampFile -TotalCount 1 } else { "" }
-        if (-not (Test-Path $ico) -or $old -ne $h) {
-            if (Test-Path $ico) { Backup-File $ico }
+        if (-not (Test-Path $ico) -or (Get-Stamp $stampFile) -ne $h) {
+            Backup-File $ico
             New-IcoFromPng $bPng $ico
-            New-Dir $Preset
-            Set-Content -Path $stampFile -Value $h -Encoding ASCII
+            Set-Stamp $stampFile $h
             $changed = $true
             Say "Icona generata da custom\branding\RetroWin.png"
         }
@@ -1126,15 +1155,16 @@ if (Test-Path $dsF) {
 
 # ---------------- Report ----------------
 $report = Join-Path $Root "report_struttura.txt"
-$lines = @()
-$lines += "RISULTATI"
-$Results.GetEnumerator() | ForEach-Object { $lines += ("  {0,-22} {1}" -f $_.Key, $_.Value) }
-$lines += ""
-$lines += "VERIFICA EXE (percorsi attesi)"
-$lines += $exeLines
-$lines += ""
-$lines += "VERIFICA IMPOSTAZIONI"
-$lines += $cfgLines
+# riepilogo: mostrato a schermo e all'inizio del report
+$summary = @("RISULTATI")
+$Results.GetEnumerator() | ForEach-Object { $summary += ("  {0,-22} {1}" -f $_.Key, $_.Value) }
+$summary += ""
+$summary += "VERIFICA EXE (percorsi attesi)"
+$summary += $exeLines
+$summary += ""
+$summary += "VERIFICA IMPOSTAZIONI"
+$summary += $cfgLines
+$lines = $summary
 $lines += ""
 $lines += "STRUTTURA di $Root (roms: solo il numero di cartelle sistema)"
 Get-ChildItem -Path $Root -Depth 1 -Directory -ErrorAction SilentlyContinue |
@@ -1152,7 +1182,7 @@ $lines | Set-Content -Path $report -Encoding UTF8
 
 Write-Host ""
 Write-Host "================ RIEPILOGO ================" -ForegroundColor Green
-$lines | Select-Object -First ($Results.Count + $exeLines.Count + $cfgLines.Count + 7) | ForEach-Object { Write-Host $_ }
+$summary | ForEach-Object { Write-Host $_ }
 Write-Host ""
 Write-Host "Report completo: $report" -ForegroundColor Green
 Write-Host "Se vuoi liberare spazio puoi cancellare la cartella: $Dl"
