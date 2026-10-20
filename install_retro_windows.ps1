@@ -133,6 +133,7 @@ $Prog = [ordered]@{
 $RaDir = $Prog["RetroArch"].Dir
 $DsDir = $Prog["DuckStation"].Dir
 $EsSettingsFile = Join-Path $EsDeCfg "settings\es_settings.xml"
+$PadScript = Join-Path $Apps "RetroWin\pad-giocatore1.ps1"   # copiato da tools\
 
 # Percorsi scritti nelle impostazioni ad ogni esecuzione (come component_prepare.sh
 # di RetroDECK) e controllati alla fine.
@@ -309,6 +310,8 @@ Run-Step "ES-DE config" {
         Say-RdUpdate "ES-DE" $c.Set.Count $c.Kept
     }
     foreach ($k in $EsDePaths.Keys) { $txt = Set-EsSetting $txt "string" $k $EsDePaths[$k] }
+    # script di evento: servono a RetroWin (pad del Giocatore 1, vedi sotto)
+    $txt = Set-EsSetting $txt "bool" "CustomEventScripts" "true"
     if ($txt -cne $orig) { [IO.File]::WriteAllText($f, $txt) }
     # cartelle di ES-DE esposte nella cartella utente
     foreach ($d in @("gamelists", "collections", "scripts", "screensavers", "custom_systems")) {
@@ -399,6 +402,28 @@ Run-Step "DuckStation config" {
         Say-RdUpdate "DuckStation" $c.Set.Count $c.Kept
     }
     Set-IniValues $ini @(ConvertTo-Triples $DsPaths)
+}
+
+# ---------------- Pad del Giocatore 1 ----------------
+# All'avvio di ES-DE (evento "startup") parte in background tools\pad-giocatore1.ps1:
+# il primo pad che preme un pulsante diventa il Giocatore 1 di DuckStation.
+# ES-DE su Windows esegue solo .bat e aspetta che finiscano: il .bat lancia lo
+# script con "start" e termina subito.
+Run-Step "Pad Giocatore 1" {
+    $src = Join-Path $PSScriptRoot "tools\pad-giocatore1.ps1"
+    if (-not (Test-Path $src)) { throw "Manca $src" }
+    New-Dir (Split-Path $PadScript)
+    Copy-Item $src $PadScript -Force
+    $bat = Join-Path $EsDeCfg "scripts\startup\retrowin-pad.bat"
+    New-Dir (Split-Path $bat)
+    $log = Join-Path $Apps "RetroWin\pad-giocatore1.log"
+    $cmd = "start `"`" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PadScript`" " +
+           "-DuckStationIni `"$(Join-Path $DsDir 'settings.ini')`" -Log `"$log`""
+    [IO.File]::WriteAllLines($bat, [string[]]@(
+        "@echo off",
+        "rem RetroWin: il primo pad che preme un pulsante diventa il Giocatore 1 (creato da install_retro_windows.ps1)",
+        $cmd))
+    Say "Pad Giocatore 1: $bat"
 }
 
 # ---------------- Personalizzazioni RetroWin ----------------
@@ -567,6 +592,7 @@ if (Test-Path $EsSettingsFile) {
     foreach ($k in $es.Keys) { $act[$k] = [Net.WebUtility]::HtmlDecode(($es[$k] -split '\|', 2)[1]) }
     Add-Check "ES-DE percorsi" $EsDePaths $act
     Add-Check "ES-DE tema" @{ Theme = $RdThemeName } $act
+    Add-Check "ES-DE script di evento" @{ CustomEventScripts = "true" } $act
 }
 $raF = Join-Path $RaDir "retroarch.cfg"
 if (Test-Path $raF) {

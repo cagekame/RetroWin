@@ -120,8 +120,14 @@ I percorsi (ROM, BIOS, salvataggi...) li gestisce lo script: non vanno messi neg
 - RetroArch: driver joypad `sdl2`, perché i tasti di RetroDECK sono numerati per SDL
   (con `xinput` la croce direzionale non funziona e su/giù dell'analogico sono invertiti).
 - DuckStation: niente finestra console accanto al gioco, pad letti solo tramite SDL
-  (con anche XInput lo stesso pad compariva due volte), immagine 4:3 con i bordi neri
-  ritagliati mantenendo le proporzioni originali.
+  (con anche XInput lo stesso pad compariva due volte), immagine 4:3 con ritaglio
+  dell'overscan, risoluzione interna 6x, ingrandimento a pixel netti (filmati sfumati),
+  PGXP attivo e sprite con filtro nitido.
+- Pad del Giocatore 1: all'avvio di RetroWin il primo pad che preme un pulsante
+  qualsiasi diventa il Giocatore 1 di DuckStation, l'altro il Giocatore 2 (Windows
+  numera i pad in base all'ordine di collegamento, che non si può scegliere). Lo fa
+  `tools/pad-giocatore1.ps1`, lanciato da ES-DE come script di evento "startup";
+  l'esito dell'ultimo avvio è in `Apps\RetroWin\pad-giocatore1.log`.
 - Icona e splash screen RetroWin.
 - Loghi RetroWin nel tema ES-DE (`custom/files/ES-DE/themes/RetroDECK-theme-main/core/images/`).
 
@@ -135,6 +141,8 @@ lib/
   config.ps1                file di impostazioni e aggiornamento delle impostazioni RetroDECK
   programs.ps1              installazione e aggiornamento dei programmi
   branding.ps1              icona e splash screen
+tools/
+  pad-giocatore1.ps1        all'avvio di ES-DE: il primo pad usato diventa il Giocatore 1
 custom/                     personalizzazioni RetroWin (vedi sopra)
 ```
 
