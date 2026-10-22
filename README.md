@@ -124,10 +124,15 @@ I percorsi (ROM, BIOS, salvataggi...) li gestisce lo script: non vanno messi neg
   dell'overscan, risoluzione interna 6x, ingrandimento a pixel netti (filmati sfumati),
   PGXP attivo e sprite con filtro nitido.
 - Pad del Giocatore 1: all'avvio di RetroWin il primo pad che preme un pulsante
-  qualsiasi diventa il Giocatore 1 di DuckStation, l'altro il Giocatore 2 (Windows
-  numera i pad in base all'ordine di collegamento, che non si può scegliere). Lo fa
-  `tools/pad-giocatore1.ps1`, lanciato da ES-DE come script di evento "startup";
-  l'esito dell'ultimo avvio è in `Apps\RetroWin\pad-giocatore1.log`.
+  qualsiasi diventa il Giocatore 1 di tutti i sistemi, l'altro il Giocatore 2
+  (Windows numera i pad in base all'ordine di collegamento, che non si può
+  scegliere). DuckStation e PCSX2 seguono quell'ordine, quindi lo script riscrive il
+  numero del pad nelle loro impostazioni. RetroArch invece vede i pad in un altro
+  ordine e senza il loro codice VID:PID: lo script imposta il "pad preferito" di ogni
+  giocatore con il nome del pad (quello registrato in Windows, sistemato come fa SDL).
+  Lo fa `tools/pad-giocatore1.ps1`, lanciato da ES-DE come script di evento "startup";
+  l'esito dell'ultimo avvio è in `Apps\RetroWin\pad-giocatore1.log`. Con due pad dello
+  stesso modello RetroArch non li distingue e resta il suo ordine.
 - Icona e splash screen RetroWin.
 - Loghi RetroWin nel tema ES-DE (`custom/files/ES-DE/themes/RetroDECK-theme-main/core/images/`).
 

@@ -406,7 +406,8 @@ Run-Step "DuckStation config" {
 
 # ---------------- Pad del Giocatore 1 ----------------
 # All'avvio di ES-DE (evento "startup") parte in background tools\pad-giocatore1.ps1:
-# il primo pad che preme un pulsante diventa il Giocatore 1 di DuckStation.
+# il primo pad che preme un pulsante diventa il Giocatore 1 di RetroArch,
+# DuckStation e PCSX2 (quindi di tutti i sistemi).
 # ES-DE su Windows esegue solo .bat e aspetta che finiscano: il .bat lancia lo
 # script con "start" e termina subito.
 Run-Step "Pad Giocatore 1" {
@@ -418,7 +419,10 @@ Run-Step "Pad Giocatore 1" {
     New-Dir (Split-Path $bat)
     $log = Join-Path $Apps "RetroWin\pad-giocatore1.log"
     $cmd = "start `"`" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PadScript`" " +
-           "-DuckStationIni `"$(Join-Path $DsDir 'settings.ini')`" -Log `"$log`""
+           "-DuckStationIni `"$(Join-Path $DsDir 'settings.ini')`" -RetroArchCfg `"$(Join-Path $RaDir 'retroarch.cfg')`" "
+    # PCSX2 portable: le impostazioni stanno in inis\ (il file nasce al primo avvio)
+    if (-not $SkipPCSX2) { $cmd += "-Pcsx2Ini `"$(Join-Path $Prog['PCSX2'].Dir 'inis\PCSX2.ini')`" " }
+    $cmd += "-Log `"$log`""
     [IO.File]::WriteAllLines($bat, [string[]]@(
         "@echo off",
         "rem RetroWin: il primo pad che preme un pulsante diventa il Giocatore 1 (creato da install_retro_windows.ps1)",
