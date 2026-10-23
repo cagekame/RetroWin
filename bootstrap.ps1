@@ -60,3 +60,10 @@ foreach ($k in $PSBoundParameters.Keys) {
     if ($PSBoundParameters[$k] -is [Management.Automation.SwitchParameter] -and $PSBoundParameters[$k]) { $a += "-$k" }
 }
 & powershell.exe @a
+
+# versione installata, per l'avviso aggiornamenti (tools\aggiornamenti.ps1)
+if ($LASTEXITCODE -eq 0) {
+    $ver = Join-Path $Root "Apps\RetroWin\versione.txt"
+    New-Item -ItemType Directory -Force -Path (Split-Path $ver) | Out-Null
+    Set-Content -Path $ver -Value $Ref -Encoding ASCII
+}

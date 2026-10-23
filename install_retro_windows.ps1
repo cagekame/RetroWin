@@ -134,6 +134,8 @@ $RaDir = $Prog["RetroArch"].Dir
 $DsDir = $Prog["DuckStation"].Dir
 $EsSettingsFile = Join-Path $EsDeCfg "settings\es_settings.xml"
 $PadScript = Join-Path $Apps "RetroWin\pad-giocatore1.ps1"   # copiato da tools\
+$UpdateScript = Join-Path $Apps "RetroWin\aggiornamenti.ps1"  # copiato da tools\
+$VersionFile  = Join-Path $Apps "RetroWin\versione.txt"       # scritto da bootstrap.ps1
 
 # Percorsi scritti nelle impostazioni ad ogni esecuzione (come component_prepare.sh
 # di RetroDECK) e controllati alla fine.
@@ -428,6 +430,31 @@ Run-Step "Pad Giocatore 1" {
         "rem RetroWin: il primo pad che preme un pulsante diventa il Giocatore 1 (creato da install_retro_windows.ps1)",
         $cmd))
     Say "Pad Giocatore 1: $bat"
+}
+
+# ---------------- Avviso aggiornamenti ----------------
+# Quando ES-DE si chiude (evento "quit") parte in background tools\aggiornamenti.ps1:
+# una volta a settimana guarda se c'e' una release RetroWin piu' nuova di
+# $VersionFile (scritto da bootstrap.ps1) e chiede se aggiornare. L'aggiornamento
+# rilancia bootstrap.ps1 con le opzioni di questa installazione.
+Run-Step "Avviso aggiornamenti" {
+    $src = Join-Path $PSScriptRoot "tools\aggiornamenti.ps1"
+    if (-not (Test-Path $src)) { throw "Manca $src" }
+    New-Dir (Split-Path $UpdateScript)
+    Copy-Item $src $UpdateScript -Force
+    $bat = Join-Path $EsDeCfg "scripts\quit\retrowin-aggiornamenti.bat"
+    New-Dir (Split-Path $bat)
+    $opt = @("SkipPCSX2", "NoDesktopShortcut") | Where-Object { (Get-Variable $_ -ValueOnly).IsPresent } | ForEach-Object { "-$_" }
+    $cmd = "start `"`" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$UpdateScript`" " +
+           "-Root `"$Root`" -Versione `"$VersionFile`" -UltimoControllo `"$(Join-Path $Apps 'RetroWin\ultimo-controllo.txt')`" " +
+           "-Log `"$(Join-Path $Apps 'RetroWin\aggiornamenti.log')`""
+    if ($opt) { $cmd += " -Opzioni `"$($opt -join ' ')`"" }
+    [IO.File]::WriteAllLines($bat, [string[]]@(
+        "@echo off",
+        "rem RetroWin: una volta a settimana avvisa se c'e' una nuova versione (creato da install_retro_windows.ps1)",
+        $cmd))
+    $v = Get-Stamp $VersionFile
+    Say "Avviso aggiornamenti: $bat (versione installata: $(if ($v) { $v } else { 'sconosciuta, avviso disattivato' }))"
 }
 
 # ---------------- Personalizzazioni RetroWin ----------------

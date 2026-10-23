@@ -72,6 +72,13 @@ non cancella file dell'utente.
 
 Per aggiornare basta rilanciare il comando di installazione.
 
+RetroWin avvisa anche quando esce una nuova versione: una volta a settimana, quando
+chiudi ES-DE, controlla su GitHub e, se c'è una release più nuova, mostra un avviso di
+Windows che chiede se aggiornare adesso. **Sì** aggiorna subito (con le stesse opzioni
+dell'installazione), **No** te lo ricorda tra una settimana. Lo fa
+`tools/aggiornamenti.ps1` (log in `Apps\RetroWinggiornamenti.log`) e funziona solo
+con le installazioni fatte con il comando di installazione, che salva la versione installata.
+
 - **Programmi.** RetroArch (con i core) e PCSX2 usano la versione indicata da
   RetroDECK in `desired_versions.sh`, se c'è; altrimenti l'ultima. ES-DE usa l'ultima
   release, DuckStation l'ultima release ufficiale (RetroDECK ne usa una sua versione
@@ -150,6 +157,7 @@ lib/
   branding.ps1              icona e splash screen
 tools/
   pad-giocatore1.ps1        all'avvio di ES-DE: il primo pad usato diventa il Giocatore 1
+  aggiornamenti.ps1         alla chiusura di ES-DE: controllo settimanale di una nuova versione
 custom/                     personalizzazioni RetroWin (vedi sopra)
 ```
 

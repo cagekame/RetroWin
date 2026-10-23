@@ -105,6 +105,13 @@ BIOS files go in `<Root>\bios`.
 
 To update, just run the install command again.
 
+RetroWin also tells you when a new version is out: once a week, when you close
+ES-DE, it checks GitHub and, if there's a newer release, shows a Windows message
+asking whether to update now. Choose **Yes** to update straight away (with the same
+options you installed with), **No** to be reminded next week. It's done by
+`tools/aggiornamenti.ps1` (log in `Apps\RetroWinggiornamenti.log`) and only works
+for installs made with the install command, which records the installed version.
+
 - **Programs.** RetroArch (with its cores) and PCSX2 use the version RetroDECK
   specifies in `desired_versions.sh`, if any; otherwise the latest one. ES-DE uses
   the latest release, DuckStation the latest official release (RetroDECK uses its
@@ -183,6 +190,7 @@ lib/
   branding.ps1              icon and splash screen
 tools/
   pad-giocatore1.ps1        when ES-DE starts: the first controller used becomes Player 1
+  aggiornamenti.ps1         when ES-DE closes: weekly check for a new RetroWin version
 custom/                     RetroWin customizations (see above)
 ```
 
