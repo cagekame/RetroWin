@@ -1,11 +1,15 @@
 <#
   aggiornamenti.ps1 (RetroWin)
   Lanciato in background da ES-DE quando si chiude (scripts\quit\retrowin-aggiornamenti.bat):
-  al massimo una volta a settimana chiede a GitHub l'ultima release di RetroWin
-  e, se e' piu' nuova di quella installata, chiede con un avviso di Windows se
-  aggiornare. Si' = rilancia l'installazione da GitHub (bootstrap.ps1) con le
-  stesse opzioni; No = se ne riparla al prossimo controllo, tra una settimana.
-  Lavora a ES-DE chiuso perche' l'installazione non parte con i programmi aperti.
+  al massimo una volta a settimana guarda se ci sono novita' di RetroWin, ES-DE,
+  RetroDECK stabile e del tema RetroDECK. Se ce ne sono le elenca in un avviso di
+  Windows e chiede se aggiornare. Si' = rilancia l'installazione da GitHub
+  (bootstrap.ps1) con le stesse opzioni; No = se ne riparla al prossimo controllo,
+  tra una settimana. Lavora a ES-DE chiuso perche' l'installazione non parte con i
+  programmi aperti.
+
+  DuckStation non fa scattare l'avviso: pubblica versioni nuove di continuo. Si
+  aggiorna quando parte l'installazione per un altro motivo.
 
   Versione installata: <Versione> (scritta da bootstrap.ps1). Se manca, ad
   esempio con un'installazione fatta da una copia locale del progetto, non fa nulla.
@@ -20,6 +24,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $Repo = "cagekame/RetroWin"
+$Riuscito = $false              # almeno un controllo ha avuto risposta
 
 function Write-Log($m) { if ($Log) { Add-Content -Path $Log -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" -Encoding UTF8 } }
 
@@ -30,25 +35,71 @@ function ConvertTo-Version($tag) {
     return $null
 }
 
+# Prima riga di un piccolo file di testo: "" se manca.
+function Read-Stamp($file) {
+    if (Test-Path $file) { return "$(Get-Content $file -TotalCount 1)".Trim() }
+    return ""
+}
+
+function Get-Json($url) {
+    return Invoke-RestMethod -Uri $url -TimeoutSec 20 -Headers @{ "User-Agent" = "RetroWinUpdate" }
+}
+
+# Ultimo commit del ramo main di un repository GitHub.
+function Get-Head($repo) { return (Get-Json "https://api.github.com/repos/$repo/commits/main").sha }
+
+# Esegue un controllo: restituisce la novita' trovata. Se uno non risponde, gli altri valgono lo stesso.
+function Invoke-Controllo($nome, [scriptblock]$controllo) {
+    try { & $controllo; $script:Riuscito = $true }
+    catch { Write-Log "Errore controllo ${nome}: $($_.Exception.Message)" }
+}
+
 try {
-    $installata = if (Test-Path $Versione) { "$(Get-Content $Versione -TotalCount 1)".Trim() } else { "" }
+    $installata = if (Test-Path $Versione) { Read-Stamp $Versione } else { "" }
     $vInst = ConvertTo-Version $installata
     if (-not $vInst) { return }
 
     if (Test-Path $UltimoControllo) {
         $ultimo = [datetime]::MinValue
-        $txt = "$(Get-Content $UltimoControllo -TotalCount 1)".Trim()
+        $txt = Read-Stamp $UltimoControllo
         if ([datetime]::TryParseExact($txt, "yyyy-MM-dd", $null, "None", [ref]$ultimo) -and
             ((Get-Date) - $ultimo).TotalDays -lt $Giorni) { return }
     }
 
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20 -Headers @{ "User-Agent" = "RetroWinUpdate" }
+    $apps = Join-Path $Root "Apps"
+    $novita = @(
+        Invoke-Controllo "RetroWin" {
+            $tag = (Get-Json "https://api.github.com/repos/$Repo/releases/latest").tag_name
+            $v = ConvertTo-Version $tag
+            if ($v -and $v -gt $vInst) { "RetroWin $tag (hai la $installata)" }
+        }
+        Invoke-Controllo "ES-DE" {
+            $have = Read-Stamp (Join-Path $apps "ES-DE\retrowin_version.txt")
+            $tag = (Get-Json "https://gitlab.com/api/v4/projects/18817634/releases/permalink/latest").tag_name
+            $a = ConvertTo-Version $have; $b = ConvertTo-Version $tag
+            if ($a -and $b -and $b -gt $a) { "ES-DE $tag (hai la $have)" }
+        }
+        Invoke-Controllo "RetroDECK" {
+            # commit delle impostazioni applicate; quello scartato dall'installazione non si ripropone
+            $m = [regex]::Match((Read-Stamp (Join-Path $apps "_preset\es-de.txt")), 'components ([0-9a-f]{40})')
+            if ($m.Success) {
+                $head = Get-Head "RetroDECK/components"
+                if ($head -ne $m.Groups[1].Value -and $head -ne (Read-Stamp (Join-Path $apps "RetroWin\retrodeck-scartata.txt"))) {
+                    "RetroDECK: impostazioni e versioni di RetroArch e PCSX2"
+                }
+            }
+        }
+        Invoke-Controllo "tema" {
+            $have = Read-Stamp (Join-Path $Root "ES-DE\themes\RetroDECK-theme-main\retrowin_version.txt")
+            if ($have -and -not (Get-Head "RetroDECK/RetroDECK-theme").StartsWith($have)) { "Tema RetroDECK" }
+        }
+    )
+    if (-not $Riuscito) { return }   # senza internet si riprova alla prossima chiusura
     # controllo riuscito: il prossimo tra una settimana, qualunque sia la risposta
     Set-Content -Path $UltimoControllo -Value (Get-Date -Format "yyyy-MM-dd") -Encoding ASCII
-    $vNuova = ConvertTo-Version $rel.tag_name
-    if (-not $vNuova -or $vNuova -le $vInst) { Write-Log "Nessun aggiornamento ($installata, ultima $($rel.tag_name))"; return }
-    Write-Log "Disponibile $($rel.tag_name) (installata $installata)"
+    if ($novita.Count -eq 0) { Write-Log "Nessun aggiornamento (RetroWin $installata)"; return }
+    Write-Log "Disponibile: $($novita -join '; ')"
 
     # aspetta che ES-DE e gli emulatori si chiudano del tutto (al massimo un minuto)
     for ($i = 0; $i -lt 60; $i++) {
@@ -62,14 +113,14 @@ try {
     # finestra invisibile "sempre in primo piano" come proprietaria: l'avviso non resta sotto le altre
     $top = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }
     $risposta = [System.Windows.Forms.MessageBox]::Show($top,
-        "E' disponibile RetroWin $($rel.tag_name) (hai la $installata).`n`n" +
+        "Ci sono aggiornamenti:`n`n- $($novita -join "`n- ")`n`n" +
         "Vuoi aggiornare adesso? Ci vogliono pochi minuti e giochi e impostazioni restano.`n`n" +
         "Se scegli No te lo ricordo tra una settimana.",
         "Aggiornamento RetroWin", "YesNo", "Information")
     $top.Dispose()
     if ($risposta -ne "Yes") { Write-Log "Aggiornamento rimandato"; return }
 
-    Write-Log "Aggiornamento a $($rel.tag_name) avviato"
+    Write-Log "Aggiornamento avviato"
     $cmd = "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/$Repo/main/bootstrap.ps1))) " +
            "-Root '$($Root -replace "'", "''")' $Opzioni; " +
            "Write-Host ''; Read-Host 'Aggiornamento finito: premi Invio per chiudere'"
@@ -77,6 +128,5 @@ try {
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
 } catch {
-    # senza internet o con GitHub che non risponde si riprova alla prossima chiusura
     Write-Log "Errore: $($_.Exception.Message)"
 }

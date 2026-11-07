@@ -23,7 +23,7 @@ without rearranging anything.
   DuckStation and PCSX2 are downloaded from their official sources and configured
   for you.
 - **Same as RetroDECK.** Folder structure, emulator choices and settings follow
-  RetroDECK, pinned to a specific RetroDECK version and updated in a controlled way.
+  RetroDECK, and RetroWin follows new stable RetroDECK versions on its own.
 - **Your library travels.** Copy `roms`, `bios`, `saves`, `states` and
   `ES-DE/downloaded_media` between RetroDECK and RetroWin and everything is
   where it should be. [RetroDECK Manager](https://github.com/cagekame/retrodeck_manager)
@@ -105,12 +105,15 @@ BIOS files go in `<Root>\bios`.
 
 To update, just run the install command again.
 
-RetroWin also tells you when a new version is out: once a week, when you close
-ES-DE, it checks GitHub and, if there's a newer release, shows a Windows message
-asking whether to update now. Choose **Yes** to update straight away (with the same
-options you installed with), **No** to be reminded next week. It's done by
-`tools/aggiornamenti.ps1` (log in `Apps\RetroWinggiornamenti.log`) and only works
+RetroWin also tells you when there's something new: once a week, when you close
+ES-DE, it checks for a newer RetroWin release, a newer ES-DE, a newer stable RetroDECK
+or a newer RetroDECK theme. If it finds any, a Windows message lists them and asks
+whether to update now. Choose **Yes** to update straight away (with the same options
+you installed with), **No** to be reminded next week. It's done by
+`tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`) and only works
 for installs made with the install command, which records the installed version.
+DuckStation doesn't trigger the message, because it publishes new builds all the
+time: it's updated together with everything else.
 
 - **Programs.** RetroArch (with its cores) and PCSX2 use the version RetroDECK
   specifies in `desired_versions.sh`, if any; otherwise the latest one. ES-DE uses
@@ -119,16 +122,21 @@ for installs made with the install command, which records the installed version.
   the program folder: only what changed is downloaded, a program is never
   downgraded and, without a network connection, the installed version stays. The
   program archives contain no settings, so your settings survive updates.
-- **RetroDECK settings.** They are pinned to commit `$RdCommit` of
-  [RetroDECK/components](https://github.com/RetroDECK/components) (in
-  `install_retro_windows.ps1`). The first time they are applied in full. When
-  `$RdCommit` changes, the script compares the old RetroDECK settings, the new ones
-  and your current ones entry by entry: an entry you never changed takes the new
+- **RetroDECK settings.** They come from the latest commit of the `main` branch
+  (stable RetroDECK) of
+  [RetroDECK/components](https://github.com/RetroDECK/components), which also sets
+  the RetroArch and PCSX2 versions. If that commit can't be used (files moved or
+  unreadable), RetroWin stays on the version already applied and says so in the
+  final summary. `$RdCommit` in `install_retro_windows.ps1` is only a fallback for
+  a first install when GitHub doesn't answer. The first time the settings are
+  applied in full. When RetroDECK changes, the script compares the old RetroDECK
+  settings, the new ones and your current ones entry by entry: an entry you never
+  changed takes the new
   value, an entry you changed stays as it is, new entries are added. Then the
   RetroWin customizations are applied again. A `.bak` backup is made before every
   change.
-- **ES-DE theme.** Pinned to a commit of RetroDECK-theme (`$RdThemeUrl`): it is
-  reinstalled when that changes.
+- **ES-DE theme.** The latest commit of the `main` branch of RetroDECK-theme, like
+  RetroDECK: it is reinstalled when that changes.
 
 ## What RetroWin changes compared to RetroDECK
 
@@ -190,7 +198,7 @@ lib/
   branding.ps1              icon and splash screen
 tools/
   pad-giocatore1.ps1        when ES-DE starts: the first controller used becomes Player 1
-  aggiornamenti.ps1         when ES-DE closes: weekly check for a new RetroWin version
+  aggiornamenti.ps1         when ES-DE closes: weekly update check
 custom/                     RetroWin customizations (see above)
 ```
 
@@ -204,8 +212,7 @@ powershell -ExecutionPolicy Bypass -File .\install_retro_windows.ps1 -SkipPCSX2
 
 ### Releasing a new version
 
-1. Change and test locally (`install_retro_windows.ps1`). To follow a newer
-   RetroDECK, set `$RdCommit` (and `$RdThemeUrl` if needed) to the wanted commit.
+1. Change and test locally (`install_retro_windows.ps1`).
 2. Commit and push to `main`.
 3. Create a GitHub release with a new tag (e.g. `v1.3.1`): `bootstrap.ps1` always
    uses the latest release, so installations never pick up half-finished changes.

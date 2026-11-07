@@ -151,6 +151,18 @@ function Get-RdFile($name, $commit = $RdCommit) {
     return $dest
 }
 
+# Controlla che un commit RetroDECK sia utilizzabile: errore se un file manca o non
+# ha il contenuto atteso (es. una nuova versione ha cambiato struttura).
+function Test-RdCommit($commit) {
+    if (-not (Select-String -Path (Get-RdFile "desired_versions.sh" $commit) -Pattern 'RETROARCH_DESIRED_VERSION=' -Quiet)) {
+        throw "desired_versions.sh senza la versione di RetroArch"
+    }
+    $ra = Get-RdRetroArch $commit
+    if ($ra.cfg.Count -eq 0 -or $ra.opt.Count -eq 0) { throw "impostazioni RetroArch vuote" }
+    if ((Get-RdDuckStation $commit).Count -eq 0) { throw "impostazioni DuckStation vuote" }
+    if ((Read-EsSettings (Get-RdEsDe $commit)).Count -eq 0) { throw "impostazioni ES-DE vuote" }
+}
+
 # Impostazioni RetroDECK di un commit, gia' filtrate per Windows.
 function Get-RdRetroArch($commit) {
     $rd = Read-Cfg (Get-RdFile "retroarch.cfg" $commit)

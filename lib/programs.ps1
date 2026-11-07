@@ -63,6 +63,11 @@ function Get-ReleaseAsset($api, $rx, $what) {
     return $rel, $a
 }
 
+# Ultimo commit del ramo main di un repository GitHub.
+function Get-RepoHead($repo) {
+    return (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/commits/main" -Headers @{ "User-Agent" = "RetroWinSetup" }).sha
+}
+
 # Eseguibile di un programma della tabella $Prog ($null se non e' installato).
 function Get-ProgramExe($name) {
     $p = $Prog[$name]

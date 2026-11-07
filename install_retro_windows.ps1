@@ -36,7 +36,7 @@
 
   Lo script e' idempotente e fa anche da aggiornamento: installa o aggiorna i
   programmi alle versioni di RetroDECK (o alle ultime), applica le impostazioni
-  RetroDECK per intero solo la prima volta e, quando cambia $RdCommit, aggiorna
+  RetroDECK per intero solo la prima volta e, quando RetroDECK cambia, aggiorna
   solo le voci che l'utente non ha modificato; ad ogni esecuzione riallinea i
   percorsi (come "postmove" in RetroDECK). Non cancella file dell'utente:
   quando deve sostituire una cartella con un collegamento ne sposta prima il
@@ -68,12 +68,10 @@ $EsDeFallbackUrl = "https://gitlab.com/es-de/emulationstation-de/-/package_files
 $RetroArchStableIndex = "https://buildbot.libretro.com/stable/"
 $CheatsUrl = "https://buildbot.libretro.com/assets/frontend/cheats.zip"
 
-# Impostazioni ufficiali RetroDECK (repo RetroDECK/components), fissate a un
-# commit preciso perche' il risultato sia riproducibile (commit del 2026-10-03).
+# Impostazioni ufficiali RetroDECK (repo RetroDECK/components). RetroWin segue da
+# solo RetroDECK stabile (ramo main, vedi "Versione RetroDECK" piu' sotto): questo
+# commit (2026-10-03) serve solo se GitHub non risponde alla prima installazione.
 # Dallo stesso commit si leggono le versioni dei programmi (desired_versions.sh).
-# Per aggiornare RetroWin a una RetroDECK piu' recente basta cambiare questo
-# commit: chi rilancia lo script riceve programmi e impostazioni nuove, senza
-# perdere le impostazioni che ha modificato.
 $RdCommit  = "fcd0d72995d7aa2e741e2753ac6914025b2ff1ac"
 $RdFiles   = [ordered]@{
     "es_settings.xml" = "es-de/rd_assets/rd_config/es_settings.xml"
@@ -82,8 +80,10 @@ $RdFiles   = [ordered]@{
     "retroarch-core-options.cfg" = "retroarch/rd_assets/rd_config/retroarch-core-options.cfg"
     "desired_versions.sh" = "automation-tools/alchemist/desired_versions.sh"
 }
-# Tema ES-DE ufficiale RetroDECK (repo RetroDECK/RetroDECK-theme, 2026-10-03).
-$RdThemeUrl  = "https://github.com/RetroDECK/RetroDECK-theme/archive/c50205283cbb4a1bb2b05c11e897cf129f23f076.zip"
+# Tema ES-DE ufficiale RetroDECK: ramo main, come RetroDECK. Questo commit
+# (2026-10-03) serve solo se GitHub non risponde alla prima installazione.
+$RdThemeRepo   = "RetroDECK/RetroDECK-theme"
+$RdThemeCommit = "c50205283cbb4a1bb2b05c11e897cf129f23f076"
 $RdThemeName = "RetroDECK-theme-main"   # nome usato da RetroDECK in es_settings.xml
 
 # Backup .bak tenuti per ogni file di impostazioni (i piu' vecchi vengono tolti).
@@ -136,6 +136,7 @@ $EsSettingsFile = Join-Path $EsDeCfg "settings\es_settings.xml"
 $PadScript = Join-Path $Apps "RetroWin\pad-giocatore1.ps1"   # copiato da tools\
 $UpdateScript = Join-Path $Apps "RetroWin\aggiornamenti.ps1"  # copiato da tools\
 $VersionFile  = Join-Path $Apps "RetroWin\versione.txt"       # scritto da bootstrap.ps1
+$RdSkipFile   = Join-Path $Apps "RetroWin\retrodeck-scartata.txt"  # versione RetroDECK non utilizzabile
 
 # Percorsi scritti nelle impostazioni ad ogni esecuzione (come component_prepare.sh
 # di RetroDECK) e controllati alla fine.
@@ -192,6 +193,28 @@ if ($running.Count -gt 0) {
 New-Dir $Root
 Say "Cartella di lavoro: $Root"
 New-Dir $Apps; New-Dir $Dl; New-Dir $Emu
+
+# ---------------- Versione RetroDECK ----------------
+# Si usa l'ultimo commit di RetroDECK stabile (ramo main di RetroDECK/components).
+# Se i suoi file sono spostati o illeggibili, o GitHub non risponde, resta la
+# versione gia' applicata. Una versione scartata viene segnata in $RdSkipFile:
+# l'avviso aggiornamenti non la ripropone finche' RetroDECK non ne pubblica un'altra.
+Run-Step "Versione RetroDECK" {
+    $base = Get-PresetCommit "es-de"
+    if ($base) { $script:RdCommit = $base }
+    $inUso = $RdCommit.Substring(0, 8)
+    try { $head = Get-RepoHead "RetroDECK/components" }
+    catch { Warn "Non riesco a controllare RetroDECK ($($_.Exception.Message)): resta $inUso"; return }
+    if ($head -eq $RdCommit) { Remove-Item $RdSkipFile -ErrorAction SilentlyContinue; Say "RetroDECK $inUso gia' aggiornata"; return }
+    try { Test-RdCommit $head }
+    catch {
+        Set-Stamp $RdSkipFile $head
+        throw "Nuova RetroDECK $($head.Substring(0, 8)) non utilizzabile, resta $inUso ($($_.Exception.Message))"
+    }
+    Remove-Item $RdSkipFile -ErrorAction SilentlyContinue
+    $script:RdCommit = $head
+    Say "RetroDECK: passo da $inUso a $($head.Substring(0, 8))"
+}
 
 # ---------------- ES-DE ----------------
 Run-Step "ES-DE" {
@@ -320,12 +343,14 @@ Run-Step "ES-DE config" {
         Set-Junction (Join-Path $Root "ES-DE\$d") (Join-Path $EsDeCfg $d)
     }
     Set-Junction (Join-Path $Paths.logs "ES-DE") (Join-Path $EsDeCfg "logs")
-    # tema RetroDECK (versione = inizio del commit nell'indirizzo)
+    # tema RetroDECK (versione = inizio del commit)
     $theme = Join-Path $Paths.themes $RdThemeName
-    $tv = [IO.Path]::GetFileNameWithoutExtension($RdThemeUrl).Substring(0, 8)
     $had = Get-Installed $theme
     Update-Program "Tema $RdThemeName" $theme @("theme.xml") {
-        return @{ Version = $tv; Url = $RdThemeUrl; File = "RetroDECK-theme-$tv.zip" }
+        # senza risposta da GitHub: se il tema c'e' resta (Update-Program), altrimenti il commit di riserva
+        $c = try { Get-RepoHead $RdThemeRepo } catch { if (Test-Path (Join-Path $theme "theme.xml")) { throw }; $RdThemeCommit }
+        $tv = $c.Substring(0, 8)
+        return @{ Version = $tv; Url = "https://github.com/$RdThemeRepo/archive/$c.zip"; File = "RetroDECK-theme-$tv.zip" }
     } @("RetroDECK-theme*.zip")
     # custom\files puo' sostituire file del tema: va riapplicato
     if ($Force -or (Get-Installed $theme) -ne $had) { $script:PresetApplied = $true }
@@ -434,9 +459,10 @@ Run-Step "Pad Giocatore 1" {
 
 # ---------------- Avviso aggiornamenti ----------------
 # Quando ES-DE si chiude (evento "quit") parte in background tools\aggiornamenti.ps1:
-# una volta a settimana guarda se c'e' una release RetroWin piu' nuova di
-# $VersionFile (scritto da bootstrap.ps1) e chiede se aggiornare. L'aggiornamento
-# rilancia bootstrap.ps1 con le opzioni di questa installazione.
+# una volta a settimana guarda se ci sono novita' di RetroWin, ES-DE, RetroDECK
+# e del suo tema e chiede se aggiornare. L'aggiornamento rilancia bootstrap.ps1
+# con le opzioni di questa installazione. Senza $VersionFile (scritto da
+# bootstrap.ps1) l'avviso resta spento.
 Run-Step "Avviso aggiornamenti" {
     $src = Join-Path $PSScriptRoot "tools\aggiornamenti.ps1"
     if (-not (Test-Path $src)) { throw "Manca $src" }

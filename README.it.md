@@ -72,12 +72,15 @@ non cancella file dell'utente.
 
 Per aggiornare basta rilanciare il comando di installazione.
 
-RetroWin avvisa anche quando esce una nuova versione: una volta a settimana, quando
-chiudi ES-DE, controlla su GitHub e, se c'è una release più nuova, mostra un avviso di
-Windows che chiede se aggiornare adesso. **Sì** aggiorna subito (con le stesse opzioni
-dell'installazione), **No** te lo ricorda tra una settimana. Lo fa
-`tools/aggiornamenti.ps1` (log in `Apps\RetroWinggiornamenti.log`) e funziona solo
-con le installazioni fatte con il comando di installazione, che salva la versione installata.
+RetroWin avvisa anche quando c'è qualcosa di nuovo: una volta a settimana, quando
+chiudi ES-DE, controlla se ci sono una release più nuova di RetroWin, un ES-DE più
+nuovo, una RetroDECK stabile più nuova o un tema RetroDECK più nuovo. Se trova
+qualcosa, un avviso di Windows lo elenca e chiede se aggiornare adesso. **Sì** aggiorna
+subito (con le stesse opzioni dell'installazione), **No** te lo ricorda tra una
+settimana. Lo fa `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`)
+e funziona solo con le installazioni fatte con il comando di installazione, che salva
+la versione installata. DuckStation non fa scattare l'avviso, perché pubblica versioni
+nuove di continuo: si aggiorna insieme a tutto il resto.
 
 - **Programmi.** RetroArch (con i core) e PCSX2 usano la versione indicata da
   RetroDECK in `desired_versions.sh`, se c'è; altrimenti l'ultima. ES-DE usa l'ultima
@@ -86,16 +89,19 @@ con le installazioni fatte con il comando di installazione, che salva la version
   cartella del programma: si scarica solo ciò che è cambiato, non si torna mai a una
   versione più vecchia e, senza rete, resta quella installata. Gli archivi dei
   programmi non contengono impostazioni, quindi aggiornando restano.
-- **Impostazioni RetroDECK.** Sono fissate al commit `$RdCommit` di
-  [RetroDECK/components](https://github.com/RetroDECK/components) (in
-  `install_retro_windows.ps1`). La prima volta si applicano per intero. Quando
-  `$RdCommit` cambia, lo script confronta voce per voce le impostazioni RetroDECK
-  vecchie, quelle nuove e quelle attuali: se una voce non era stata modificata prende
+- **Impostazioni RetroDECK.** Vengono dall'ultimo commit del ramo `main` (RetroDECK
+  stabile) di [RetroDECK/components](https://github.com/RetroDECK/components), che
+  decide anche le versioni di RetroArch e PCSX2. Se quel commit non si può usare (file
+  spostati o illeggibili), RetroWin resta sulla versione già applicata e lo dice nel
+  riepilogo finale. `$RdCommit` in `install_retro_windows.ps1` serve solo per una prima
+  installazione quando GitHub non risponde. La prima volta le impostazioni si applicano
+  per intero. Quando RetroDECK cambia, lo script confronta voce per voce le impostazioni
+  RetroDECK vecchie, quelle nuove e quelle attuali: se una voce non era stata modificata prende
   il nuovo valore, se era stata modificata resta com'è. Le voci nuove si aggiungono.
   Poi si riapplicano le personalizzazioni RetroWin. Prima di ogni modifica viene
   fatto un backup `.bak`.
-- **Tema ES-DE.** Fissato a un commit di RetroDECK-theme (`$RdThemeUrl`): si
-  reinstalla quando cambia.
+- **Tema ES-DE.** L'ultimo commit del ramo `main` di RetroDECK-theme, come RetroDECK:
+  si reinstalla quando cambia.
 
 ## Personalizzazioni
 
@@ -157,7 +163,7 @@ lib/
   branding.ps1              icona e splash screen
 tools/
   pad-giocatore1.ps1        all'avvio di ES-DE: il primo pad usato diventa il Giocatore 1
-  aggiornamenti.ps1         alla chiusura di ES-DE: controllo settimanale di una nuova versione
+  aggiornamenti.ps1         alla chiusura di ES-DE: controllo settimanale degli aggiornamenti
 custom/                     personalizzazioni RetroWin (vedi sopra)
 ```
 
@@ -166,9 +172,7 @@ copia completa del progetto (`bootstrap.ps1` la scarica da solo).
 
 ## Nuova versione
 
-1. Modifica e prova in locale (`install_retro_windows.ps1`). Per seguire una
-   RetroDECK più recente cambia `$RdCommit` (ed eventualmente `$RdThemeUrl`) con il
-   commit voluto.
+1. Modifica e prova in locale (`install_retro_windows.ps1`).
 2. Fai commit e push su `main`.
 3. Su GitHub crea una release con un tag nuovo (es. `v1.1.0`): `bootstrap.ps1` usa
    sempre l'ultima release, quindi le installazioni non prendono modifiche a metà.
