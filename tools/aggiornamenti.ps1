@@ -2,11 +2,13 @@
   aggiornamenti.ps1 (RetroWin)
   Lanciato in background da ES-DE quando si chiude (scripts\quit\retrowin-aggiornamenti.bat):
   al massimo una volta a settimana guarda se ci sono novita' di RetroWin, ES-DE,
-  RetroDECK stabile e del tema RetroDECK. Se ce ne sono le elenca in un avviso di
-  Windows e chiede se aggiornare. Si' = rilancia l'installazione da GitHub
-  (bootstrap.ps1) con le stesse opzioni; No = se ne riparla al prossimo controllo,
-  tra una settimana. Lavora a ES-DE chiuso perche' l'installazione non parte con i
-  programmi aperti.
+  RetroDECK stabile e del tema RetroDECK. Se ce ne sono, prima lancia da solo
+  l'installazione dell'ultima versione di RetroWin con -CheckOnly (scaricata in una
+  cartella temporanea: non modifica nulla) e mostra in una finestra cosa farebbe
+  l'aggiornamento. "Aggiorna adesso" = rilancia l'installazione da GitHub
+  (bootstrap.ps1) con la stessa versione e le stesse opzioni; "Rimanda" = se ne
+  riparla al prossimo controllo, tra una settimana. Lavora a ES-DE chiuso perche'
+  l'installazione non parte con i programmi aperti.
 
   DuckStation non fa scattare l'avviso: pubblica versioni nuove di continuo. Si
   aggiorna quando parte l'installazione per un altro motivo.
@@ -54,6 +56,79 @@ function Invoke-Controllo($nome, [scriptblock]$controllo) {
     catch { Write-Log "Errore controllo ${nome}: $($_.Exception.Message)" }
 }
 
+# Note di una release: la parte italiana (dopo "**Novita':**") se c'e', senza il markdown.
+function Get-NoteItaliane($body) {
+    $b = "$body"
+    $m = [regex]::Match($b, '(?s)\*\*Novit.{1,2}:\*\*\s*(.*)$')
+    if ($m.Success) { $b = $m.Groups[1].Value }
+    return ($b -replace '\*\*|`', '' -replace '\r?\n', "`r`n").Trim()
+}
+
+# Scarica la release $tag di RetroWin in una cartella temporanea e ne lancia
+# l'installazione con -CheckOnly sulla cartella $Root: cosa farebbe l'aggiornamento,
+# senza modificare nulla. Restituisce il testo del controllo. $attesa viene chiamato
+# di continuo mentre si aspetta (per tenere viva la finestra "controllo in corso").
+function Invoke-CheckOnly($tag, [scriptblock]$attesa) {
+    $tmp = Join-Path $env:TEMP ("RetroWin-controllo-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    try {
+        $zip = Join-Path $tmp "RetroWin.zip"
+        Invoke-WebRequest -Uri "https://github.com/$Repo/archive/$tag.zip" -OutFile $zip -UseBasicParsing -TimeoutSec 60 -Headers @{ "User-Agent" = "RetroWinUpdate" }
+        Expand-Archive $zip (Join-Path $tmp "src")
+        $inst = Get-ChildItem (Join-Path $tmp "src") -Recurse -Filter "install_retro_windows.ps1" | Select-Object -First 1
+        if (-not $inst) { throw "install_retro_windows.ps1 non trovato in RetroWin $tag" }
+        $out = Join-Path $tmp "out.txt"; $err = Join-Path $tmp "err.txt"
+        $p = Start-Process powershell.exe -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($inst.FullName)`" -Root `"$Root`" -CheckOnly $Opzioni"
+        $null = $p.Handle   # senza, ExitCode a volte resta vuoto
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $p.HasExited) {
+            if ($attesa) { & $attesa }
+            if ($sw.Elapsed.TotalMinutes -gt 5) { $p.Kill(); throw "il controllo non ha finito entro 5 minuti" }
+            Start-Sleep -Milliseconds 100
+        }
+        # solo le righe del controllo (non i download dei file RetroDECK)
+        $righe = @(Get-Content $out -ErrorAction SilentlyContinue) |
+            Where-Object { $_ -match '^\s*\[[*!]\]' -and $_ -notmatch "Scarico |Gia' scaricato|Download non riuscito" } |
+            ForEach-Object { $_ -replace '^\s*\[\*\] ', '' -replace '^\s*\[!\] ', '(!) ' }
+        $testo = $righe -join "`r`n"
+        if ($p.ExitCode -ne 0) {
+            $e = "$(Get-Content $err -Raw -ErrorAction SilentlyContinue)".Trim()
+            throw "il controllo e' finito con un errore (codice $($p.ExitCode)).`r`n$testo`r`n$e"
+        }
+        if (-not $testo) { throw "il controllo non ha scritto nulla" }
+        return $testo
+    } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# Finestra con il risultato del controllo e i pulsanti Aggiorna (Yes) / Rimanda (No).
+function New-RisultatoForm($intro, $testo) {
+    $font = New-Object System.Drawing.Font "Segoe UI", 9
+    $f = New-Object System.Windows.Forms.Form -Property @{
+        Text = "Aggiornamento RetroWin"; Width = 860; Height = 600; StartPosition = "CenterScreen"
+        TopMost = $true; MinimizeBox = $false; Font = $font }
+    # l'ordine conta: il riquadro che riempie va aggiunto per primo
+    $f.Controls.Add((New-Object System.Windows.Forms.TextBox -Property @{
+        Multiline = $true; ReadOnly = $true; ScrollBars = "Vertical"; WordWrap = $true; Dock = "Fill"
+        Font = (New-Object System.Drawing.Font "Consolas", 10); Text = $testo; BackColor = [System.Drawing.SystemColors]::Window }))
+    $f.Controls.Add((New-Object System.Windows.Forms.Label -Property @{
+        Text = $intro; Dock = "Top"; Height = 34; Padding = (New-Object System.Windows.Forms.Padding 8, 10, 8, 0) }))
+    $f.Controls.Add((New-Object System.Windows.Forms.Label -Property @{
+        Text = "Giochi, salvataggi e impostazioni restano. Prima di aggiornare viene fatta una copia delle impostazioni " +
+               "(in backups\RetroWin) e, se poi un programma non va, si puo' tornare alla sua versione di prima."
+        Dock = "Bottom"; Height = 44; Padding = (New-Object System.Windows.Forms.Padding 8, 6, 8, 0) }))
+    # pulsanti in basso a destra (la fila si allinea da sola alla larghezza della finestra)
+    $bar = New-Object System.Windows.Forms.FlowLayoutPanel -Property @{
+        Dock = "Bottom"; Height = 46; FlowDirection = "RightToLeft"; Padding = (New-Object System.Windows.Forms.Padding 6, 4, 6, 6) }
+    $no = New-Object System.Windows.Forms.Button -Property @{ Text = "Rimanda di una settimana"; DialogResult = "No"; Width = 190; Height = 30 }
+    $yes = New-Object System.Windows.Forms.Button -Property @{ Text = "Aggiorna adesso"; DialogResult = "Yes"; Width = 150; Height = 30 }
+    $bar.Controls.Add($no); $bar.Controls.Add($yes)
+    $f.Controls.Add($bar)
+    $f.CancelButton = $no   # chiudere la finestra o premere Esc = rimanda
+    $f.ActiveControl = $no
+    return $f
+}
+
 try {
     $installata = if (Test-Path $Versione) { Read-Stamp $Versione } else { "" }
     $vInst = ConvertTo-Version $installata
@@ -72,9 +147,13 @@ try {
     function Test-Bloccato($nome) { return [bool](Read-Stamp (Join-Path $apps "RetroWin\bloccato-$nome.txt")) }
     $novita = @(
         Invoke-Controllo "RetroWin" {
-            $tag = (Get-Json "https://api.github.com/repos/$Repo/releases/latest").tag_name
-            $v = ConvertTo-Version $tag
-            if ($v -and $v -gt $vInst) { "RetroWin $tag (hai la $installata)" }
+            $rel = Get-Json "https://api.github.com/repos/$Repo/releases/latest"
+            $v = ConvertTo-Version $rel.tag_name
+            if ($v) { $script:RwTag = $rel.tag_name }   # versione usata per il controllo e l'aggiornamento
+            if ($v -and $v -gt $vInst) {
+                $script:RwNote = Get-NoteItaliane $rel.body
+                "RetroWin $($rel.tag_name) (hai la $installata)"
+            }
         }
         Invoke-Controllo "ES-DE" {
             if (Test-Bloccato "es-de") { return }
@@ -118,20 +197,39 @@ try {
         Start-Sleep -Seconds 1
     }
 
-    Add-Type -AssemblyName System.Windows.Forms
-    # finestra invisibile "sempre in primo piano" come proprietaria: l'avviso non resta sotto le altre
-    $top = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }
-    $risposta = [System.Windows.Forms.MessageBox]::Show($top,
-        "Ci sono aggiornamenti:`n`n- $($novita -join "`n- ")`n`n" +
-        "Vuoi aggiornare adesso? Ci vogliono pochi minuti e giochi e impostazioni restano.`n`n" +
-        "Se scegli No te lo ricordo tra una settimana.",
-        "Aggiornamento RetroWin", "YesNo", "Information")
-    $top.Dispose()
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    # mentre si controlla: finestrella "controllo in corso"
+    $wait = New-Object System.Windows.Forms.Form -Property @{
+        Text = "Aggiornamento RetroWin"; Width = 460; Height = 130; StartPosition = "CenterScreen"
+        TopMost = $true; FormBorderStyle = "FixedDialog"; MaximizeBox = $false; MinimizeBox = $false; ControlBox = $false }
+    $wait.Controls.Add((New-Object System.Windows.Forms.Label -Property @{
+        Text = "Ci sono aggiornamenti. Sto controllando cosa cambierebbe (senza modificare nulla)...`n`nCi vuole circa un minuto."
+        Dock = "Fill"; Padding = (New-Object System.Windows.Forms.Padding 12); Font = (New-Object System.Drawing.Font "Segoe UI", 9) }))
+    $wait.Show(); [System.Windows.Forms.Application]::DoEvents()
+    $tag = if ($script:RwTag) { $script:RwTag } else { $installata }
+    try {
+        $dettagli = Invoke-CheckOnly $tag { [System.Windows.Forms.Application]::DoEvents() }
+        $intro = "Niente e' stato ancora modificato. Ecco cosa farebbe l'aggiornamento:"
+        Write-Log "Controllo:`r`n$dettagli"
+    } catch {
+        $dettagli = $_.Exception.Message
+        $intro = "Non sono riuscito a controllare i dettagli. Puoi aggiornare lo stesso o rimandare:"
+        Write-Log "Controllo non riuscito: $dettagli"
+    }
+    $wait.Close(); $wait.Dispose()
+
+    $testo = "Novita':`r`n- " + ($novita -join "`r`n- ") + "`r`n`r`n"
+    if ($script:RwNote) { $testo += "Cosa c'e' di nuovo in RetroWin ${tag}:`r`n$($script:RwNote)`r`n`r`n" }
+    $testo += $dettagli
+    $f = New-RisultatoForm $intro $testo
+    $risposta = $f.ShowDialog()
+    $f.Dispose()
     if ($risposta -ne "Yes") { Write-Log "Aggiornamento rimandato"; return }
 
-    Write-Log "Aggiornamento avviato"
+    Write-Log "Aggiornamento avviato (RetroWin $tag)"
+    # -Ref: si installa la stessa versione di RetroWin usata per il controllo
     $cmd = "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/$Repo/main/bootstrap.ps1))) " +
-           "-Root '$($Root -replace "'", "''")' $Opzioni; " +
+           "-Root '$($Root -replace "'", "''")' -Ref '$tag' $Opzioni; " +
            "Write-Host ''; Read-Host 'Aggiornamento finito: premi Invio per chiudere'"
     # -EncodedCommand: nessun problema di virgolette tra Start-Process e PowerShell
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))

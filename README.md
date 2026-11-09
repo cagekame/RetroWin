@@ -112,10 +112,14 @@ To update, just run the install command again.
 
 RetroWin also tells you when there's something new: once a week, when you close
 ES-DE, it checks for a newer RetroWin release, a newer ES-DE, a newer stable RetroDECK
-build or a newer RetroDECK theme (pinned components are skipped). If it finds any, a
-Windows message lists them and asks
-whether to update now. Choose **Yes** to update straight away (with the same options
-you installed with), **No** to be reminded next week. It's done by
+build or a newer RetroDECK theme (pinned components are skipped). If it finds any, it
+first runs the installer of the latest RetroWin with `-CheckOnly` on its own (in a
+temporary folder, changing nothing) and shows in a window what the update would do:
+the RetroDECK build and whether it passes the checks, the settings entries that would
+change, the program versions and, for a new RetroWin, its release notes. Choose
+**Aggiorna adesso** to apply exactly that (same RetroWin version, same options you
+installed with), **Rimanda di una settimana** (or close the window) to be reminded
+next week. It's done by
 `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`) and only works
 for installs made with the install command, which records the installed version.
 DuckStation doesn't trigger the message, because it publishes new builds all the

@@ -81,9 +81,13 @@ RetroWin avvisa anche quando c'è qualcosa di nuovo: una volta a settimana, quan
 chiudi ES-DE, controlla se ci sono una release più nuova di RetroWin, un ES-DE più
 nuovo, una build di RetroDECK stabile più nuova o un tema RetroDECK più nuovo (i
 componenti bloccati si saltano). Se trova
-qualcosa, un avviso di Windows lo elenca e chiede se aggiornare adesso. **Sì** aggiorna
-subito (con le stesse opzioni dell'installazione), **No** te lo ricorda tra una
-settimana. Lo fa `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`)
+qualcosa, prima lancia da solo l'installazione dell'ultima versione di RetroWin con
+`-CheckOnly` (in una cartella temporanea, senza modificare nulla) e mostra in una
+finestra cosa farebbe l'aggiornamento: la build RetroDECK e se supera i controlli, le
+voci delle impostazioni che cambierebbero, le versioni dei programmi e, per un nuovo
+RetroWin, le sue note di rilascio. **Aggiorna adesso** applica esattamente quello
+(stessa versione di RetroWin, stesse opzioni dell'installazione), **Rimanda di una
+settimana** (o chiudere la finestra) te lo ricorda tra una settimana. Lo fa `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`)
 e funziona solo con le installazioni fatte con il comando di installazione, che salva
 la versione installata. DuckStation non fa scattare l'avviso, perché pubblica versioni
 nuove di continuo: si aggiorna insieme a tutto il resto.
