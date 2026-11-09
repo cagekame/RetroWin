@@ -84,8 +84,10 @@ componenti bloccati si saltano). Se trova
 qualcosa, prima lancia da solo l'installazione dell'ultima versione di RetroWin con
 `-CheckOnly` (in una cartella temporanea, senza modificare nulla) e mostra in una
 finestra cosa farebbe l'aggiornamento: la build RetroDECK e se supera i controlli, le
-voci delle impostazioni che cambierebbero, le versioni dei programmi e, per un nuovo
-RetroWin, le sue note di rilascio. **Aggiorna adesso** applica esattamente quello
+voci delle impostazioni che cambierebbero, le versioni dei programmi, le note di un
+nuovo RetroWin e, per una nuova build di RetroDECK, le note ufficiali di RetroDECK (in
+inglese), con in cima le righe su RetroArch e i suoi core, ES-DE, DuckStation e PCSX2;
+il pulsante **Note complete di RetroDECK** le apre per intero nel browser. **Aggiorna adesso** applica esattamente quello
 (stessa versione di RetroWin, stesse opzioni dell'installazione), **Rimanda di una
 settimana** (o chiudere la finestra) te lo ricorda tra una settimana. Lo fa `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`)
 e funziona solo con le installazioni fatte con il comando di installazione, che salva

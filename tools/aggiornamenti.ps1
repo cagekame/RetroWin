@@ -64,6 +64,74 @@ function Get-NoteItaliane($body) {
     return ($b -replace '\*\*|`', '' -replace '\r?\n', "`r`n").Trim()
 }
 
+# Data (UTC) di una data GitHub: in PowerShell 5.1 e' una stringa, in 7 gia' una data.
+function ConvertTo-Utc($d) {
+    if ($d -is [datetime]) { return $d.ToUniversalTime() }
+    return [DateTimeOffset]::Parse("$d", [Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+}
+
+# "main-20261003-0649" -> data UTC della build
+function Get-TagTime($name) {
+    return [datetime]::ParseExact(($name -replace '^main-', ''), "yyyyMMdd-HHmm", [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]"AssumeUniversal, AdjustToUniversal")
+}
+
+# Release ufficiali di RetroDECK (RetroDECK/RetroDECK) che corrispondono alle build tra quella
+# applicata ($daNome, esclusa; vuoto = sconosciuta) e la nuova ($aNome, compresa). Una release
+# appartiene all'ultima build uscita prima di lei, se non e' passata piu' di una settimana.
+function Select-RdReleases($releases, [string[]]$tagNames, $daNome, $aNome) {
+    $tagNames = @($tagNames | Sort-Object)
+    foreach ($r in @($releases | Where-Object { -not $_.draft -and -not $_.prerelease })) {
+        $quando = ConvertTo-Utc $r.published_at
+        $owner = @($tagNames | Where-Object { (Get-TagTime $_) -le $quando }) | Select-Object -Last 1
+        if (-not $owner -or ($quando - (Get-TagTime $owner)).TotalDays -gt 7) { continue }
+        if ($owner -le $daNome -or $owner -gt $aNome) { continue }
+        $r
+    }
+}
+
+# Note di una release di RetroDECK: le righe degli elenchi (ADDED, FIXED/CHANGED, UPDATED...),
+# divise tra quelle che riguardano RetroWin e le altre. Le note restano in inglese.
+$RdRilevanti = 'RETROARCH|-CORE\b|\bCORES?\b|ES-DE|ESDE|DUCKSTATION|PCSX2|THEME'
+function Split-RdNote($body) {
+    $nostre = @(); $altre = @(); $sezione = ""
+    foreach ($riga in ("$body" -split '\r?\n')) {
+        if ($riga -match '^\s*(---|#{1,2}\s)') { if ($sezione) { $sezione = "" }; continue }   # fine elenchi
+        if ($riga -match '^\s*###\s*(.+?)\s*$') { $sezione = $Matches[1]; continue }
+        if (-not $sezione -or $riga -notmatch '^\s*[-*]\s+(\S.*)$') { continue }
+        $t = ($Matches[1] -replace '\*\*|`', '' -replace '\[([^\]]+)\]\([^)]+\)', '$1').Trim()
+        $voce = if ($sezione -match '^UPDATED') { "Aggiornati: $t" } else { $t }
+        if ($t -match $RdRilevanti) { $nostre += $voce } else { $altre += $voce }
+    }
+    return @{ Nostre = $nostre; Altre = $altre }
+}
+
+# Indirizzo delle note complete: la pagina del wiki di RetroDECK, se c'e', se no la release.
+function Get-RdNoteUrl($r) {
+    $m = [regex]::Match("$($r.body)", '\((https://retrodeck\.readthedocs\.io/[^)\s]+)\)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return $r.html_url
+}
+
+# Testo per la finestra con le note delle release scelte (dalla piu' nuova).
+function Format-RdNote($rels) {
+    $rels = @($rels | Sort-Object { ConvertTo-Utc $_.published_at } -Descending)
+    if ($rels.Count -eq 0) { return "RetroDECK non ha pubblicato note per questa build." }
+    $out = @()
+    foreach ($r in $rels) {
+        $n = Split-RdNote $r.body
+        $out += "RetroDECK $($r.tag_name) (note originali, in inglese):"
+        $out += "  Riguarda RetroWin:"
+        if ($n.Nostre.Count) { $out += $n.Nostre | ForEach-Object { "  - $_" } } else { $out += "  - (niente)" }
+        if ($n.Altre.Count) {
+            $out += "  Altro (parti di RetroDECK che RetroWin non usa):"
+            $out += $n.Altre | ForEach-Object { "  - $_" }
+        }
+        $out += ""
+    }
+    return ($out -join "`r`n").TrimEnd()
+}
+
 # Scarica la release $tag di RetroWin in una cartella temporanea e ne lancia
 # l'installazione con -CheckOnly sulla cartella $Root: cosa farebbe l'aggiornamento,
 # senza modificare nulla. Restituisce il testo del controllo. $attesa viene chiamato
@@ -123,6 +191,13 @@ function New-RisultatoForm($intro, $testo) {
     $no = New-Object System.Windows.Forms.Button -Property @{ Text = "Rimanda di una settimana"; DialogResult = "No"; Width = 190; Height = 30 }
     $yes = New-Object System.Windows.Forms.Button -Property @{ Text = "Aggiorna adesso"; DialogResult = "Yes"; Width = 150; Height = 30 }
     $bar.Controls.Add($no); $bar.Controls.Add($yes)
+    if ($script:RdUrl) {
+        # apre le note complete nel browser; la finestra resta aperta
+        $rd = New-Object System.Windows.Forms.Button -Property @{ Text = "Note complete di RetroDECK"; Width = 200; Height = 30 }
+        $url = $script:RdUrl
+        $rd.Add_Click({ try { Start-Process $url } catch { } }.GetNewClosure())
+        $bar.Controls.Add($rd)
+    }
     $f.Controls.Add($bar)
     $f.CancelButton = $no   # chiudere la finestra o premere Esc = rimanda
     $f.ActiveControl = $no
@@ -174,6 +249,22 @@ try {
                 $sha = $t[0].commit.sha
                 if ($sha -ne $m.Groups[1].Value -and $sha -ne (Read-Stamp (Join-Path $apps "RetroWin\retrodeck-scartata.txt"))) {
                     "RetroDECK $($t[0].name): impostazioni e versioni di RetroArch e PCSX2"
+                    # note ufficiali di RetroDECK per le build nuove: se non arrivano, l'avviso vale lo stesso
+                    try {
+                        $nomi = @($tags | Where-Object { $_.name -match '^main-\d{8}-\d{4}$' } | ForEach-Object { $_.name } | Sort-Object)
+                        $da = @($tags | Where-Object { $_.commit.sha -eq $m.Groups[1].Value } | ForEach-Object { $_.name })
+                        # build applicata sconosciuta: solo le note dell'ultima build
+                        $da = if ($da.Count) { $da[0] } else { @($nomi | Where-Object { $_ -lt $t[0].name }) | Select-Object -Last 1 }
+                        $rels = Get-Json "https://api.github.com/repos/RetroDECK/RetroDECK/releases?per_page=30"
+                        $scelte = @(Select-RdReleases $rels $nomi "$da" $t[0].name)
+                        $script:RdNote = Format-RdNote $scelte
+                        $script:RdUrl = if ($scelte.Count) { Get-RdNoteUrl ($scelte | Sort-Object { ConvertTo-Utc $_.published_at } | Select-Object -Last 1) }
+                                        else { "https://github.com/RetroDECK/RetroDECK/releases" }
+                    } catch {
+                        Write-Log "Note RetroDECK non lette: $($_.Exception.Message)"
+                        $script:RdNote = "Non sono riuscito a leggere le note di RetroDECK."
+                        $script:RdUrl = "https://github.com/RetroDECK/RetroDECK/releases"
+                    }
                 }
             }
         }
@@ -220,6 +311,7 @@ try {
 
     $testo = "Novita':`r`n- " + ($novita -join "`r`n- ") + "`r`n`r`n"
     if ($script:RwNote) { $testo += "Cosa c'e' di nuovo in RetroWin ${tag}:`r`n$($script:RwNote)`r`n`r`n" }
+    if ($script:RdNote) { $testo += "Cosa dice RetroDECK:`r`n$($script:RdNote)`r`n`r`n" }
     $testo += $dettagli
     $f = New-RisultatoForm $intro $testo
     $risposta = $f.ShowDialog()

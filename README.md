@@ -116,7 +116,10 @@ build or a newer RetroDECK theme (pinned components are skipped). If it finds an
 first runs the installer of the latest RetroWin with `-CheckOnly` on its own (in a
 temporary folder, changing nothing) and shows in a window what the update would do:
 the RetroDECK build and whether it passes the checks, the settings entries that would
-change, the program versions and, for a new RetroWin, its release notes. Choose
+change, the program versions, the release notes of a new RetroWin and, for a new
+RetroDECK build, RetroDECK's own release notes (in English), with the lines about
+RetroArch and its cores, ES-DE, DuckStation and PCSX2 listed first; the
+**Note complete di RetroDECK** button opens the full notes in the browser. Choose
 **Aggiorna adesso** to apply exactly that (same RetroWin version, same options you
 installed with), **Rimanda di una settimana** (or close the window) to be reminded
 next week. It's done by
