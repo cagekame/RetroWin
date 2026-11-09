@@ -145,22 +145,113 @@ function Set-PresetDone($name, [bool]$changed) {
     Set-Stamp (Join-Path $Preset "$name.txt") "Impostazioni RetroDECK (components $RdCommit) applicate il $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
 }
 
+# File RetroDECK di un commit. Restano in _preset\retrodeck (non in _download, che si
+# puo' cancellare): servono come base per gli aggiornamenti anche se GitHub non li
+# avesse piu'. Vengono riusati quelli gia' scaricati in _download dalle versioni precedenti.
 function Get-RdFile($name, $commit = $RdCommit) {
-    $dest = Join-Path $Dl "retrodeck\$($commit.Substring(0, 8))\$name"
+    $c8 = $commit.Substring(0, 8)
+    $dest = Join-Path $Preset "retrodeck\$c8\$name"
+    $old = Join-Path $Dl "retrodeck\$c8\$name"
+    if (-not (Test-Path $dest) -and (Test-Path $old)) { New-Dir (Split-Path $dest); Copy-Item $old $dest }
     Get-File "https://raw.githubusercontent.com/RetroDECK/components/$commit/$($RdFiles[$name])" $dest
     return $dest
 }
 
-# Controlla che un commit RetroDECK sia utilizzabile: errore se un file manca o non
-# ha il contenuto atteso (es. una nuova versione ha cambiato struttura).
-function Test-RdCommit($commit) {
-    if (-not (Select-String -Path (Get-RdFile "desired_versions.sh" $commit) -Pattern 'RETROARCH_DESIRED_VERSION=' -Quiet)) {
-        throw "desired_versions.sh senza la versione di RetroArch"
+# Toglie da _preset\retrodeck i commit che non servono piu': restano quelli delle
+# impostazioni applicate e quello in uso.
+function Remove-UnusedRdFiles {
+    $dir = Join-Path $Preset "retrodeck"
+    if (-not (Test-Path $dir)) { return }
+    $keep = @($RdCommit) + @("es-de", "retroarch", "duckstation" | ForEach-Object { Get-PresetCommit $_ }) |
+        Where-Object { $_ } | ForEach-Object { $_.Substring(0, 8) }
+    Get-ChildItem $dir -Directory | Where-Object { $_.Name -notin $keep } | Remove-Item -Recurse -Force
+}
+
+# Voci delle personalizzazioni RetroWin (custom\overrides), raggruppate per il file
+# RetroDECK corrispondente (stesse chiavi di Get-RdSets).
+function Get-CustomKeys {
+    $ov = Join-Path $Custom "overrides"
+    $h = @{}
+    $f = Join-Path $ov "retroarch.cfg"
+    if (Test-Path $f) { $h["retroarch.cfg"] = @((Read-Cfg $f).Keys) }
+    $opt = @()
+    $f = Join-Path $ov "retroarch-core-options.cfg"
+    if (Test-Path $f) { $opt += @((Read-Cfg $f).Keys) }
+    $d = Join-Path $ov "core-options"
+    if (Test-Path $d) { Get-ChildItem $d -Recurse -File -Filter "*.opt" | ForEach-Object { $opt += @((Read-Cfg $_.FullName).Keys) } }
+    $h["retroarch-core-options.cfg"] = $opt
+    $f = Join-Path $ov "duckstation.ini"
+    if (Test-Path $f) { $h["settings.ini"] = @(Read-IniTriples $f | ForEach-Object { "$($_[0])`t$($_[1])" }) }
+    $f = Join-Path $ov "es_settings.xml"
+    if (Test-Path $f) { $h["es_settings.xml"] = @((Read-EsSettings ([regex]::Replace([IO.File]::ReadAllText($f), '(?s)<!--.*?-->', ''))).Keys) }
+    return $h
+}
+# Voci delle personalizzazioni che c'erano nelle impostazioni RetroDECK $old e non ci
+# sono piu' nelle $new (risultati di Get-RdSets): RetroDECK le ha tolte o rinominate,
+# quindi probabilmente la personalizzazione non ha piu' effetto.
+function Get-CustomKeysRemoved($old, $new) {
+    $c = Get-CustomKeys
+    foreach ($f in $c.Keys) {
+        foreach ($k in $c[$f]) {
+            if ($old[$f].Contains($k) -and -not $new[$f].Contains($k)) { "${f}: $($k -replace "`t", '/')" }
+        }
     }
+}
+
+# Tutte le impostazioni RetroDECK di un commit, per file (come le legge RetroWin).
+function Get-RdSets($commit) {
     $ra = Get-RdRetroArch $commit
-    if ($ra.cfg.Count -eq 0 -or $ra.opt.Count -eq 0) { throw "impostazioni RetroArch vuote" }
-    if ((Get-RdDuckStation $commit).Count -eq 0) { throw "impostazioni DuckStation vuote" }
-    if ((Read-EsSettings (Get-RdEsDe $commit)).Count -eq 0) { throw "impostazioni ES-DE vuote" }
+    return [ordered]@{
+        "retroarch.cfg"              = $ra.cfg
+        "retroarch-core-options.cfg" = $ra.opt
+        "settings.ini"               = Get-RdDuckStation $commit
+        "es_settings.xml"            = Read-EsSettings (Get-RdEsDe $commit)
+    }
+}
+
+# Controlla che un commit RetroDECK sia utilizzabile prima di adottarlo. Errore se:
+#  - un file manca o e' vuoto;
+#  - le versioni di RetroArch o PCSX2 mancano o non sono numeri di versione (o "latest");
+#  - manca una voce da cui dipende RetroWin ($RdSentinels);
+#  - rispetto al commit in uso ($base) sparisce piu' del $RdMaxLost % delle voci di un
+#    file: quasi sempre vuol dire chiavi rinominate o formato cambiato, e l'aggiornamento
+#    voce per voce farebbe danni.
+# Con -Accept (opzione -AcceptRetroDECK) si saltano gli ultimi due controlli: le
+# versioni dei programmi invece servono sempre, per sapere cosa scaricare.
+function Test-RdCommit($commit, $base, [switch]$Accept) {
+    $v = Read-RdVersions $commit
+    foreach ($k in "RETROARCH", "PCSX2") {
+        if (-not $v.ContainsKey($k)) { throw "desired_versions.sh senza la versione di $k" }
+        if ($v[$k] -notmatch $RdVersionRx) { throw "versione di $k non riconosciuta in desired_versions.sh: '$($v[$k])'" }
+    }
+    $new = Get-RdSets $commit
+    foreach ($f in $new.Keys) {
+        if ($new[$f].Count -eq 0) { throw "$f vuoto o illeggibile" }
+        if ($Accept) { continue }
+        foreach ($rx in @($RdSentinels[$f])) {
+            if ($rx -and -not @($new[$f].Keys | Where-Object { $_ -match $rx }).Count) {
+                throw "$f senza la voce $($rx -replace '\\t', '/' -replace '[\^\$]', '')"
+            }
+        }
+    }
+    if (-not $base -or $base -eq $commit) { return }
+    $old = Get-RdSets $base
+    foreach ($f in $old.Keys) {
+        # meno della meta' delle voci: RetroWin non sa piu' leggere il file (formato
+        # cambiato), va aggiornato RetroWin. Vale anche con -Accept: adottarlo
+        # rovinerebbe la base del prossimo aggiornamento.
+        if ($new[$f].Count -lt $old[$f].Count / 2) {
+            throw "${f}: lette solo $($new[$f].Count) voci invece di circa $($old[$f].Count). Formato cambiato? Serve una nuova versione di RetroWin"
+        }
+    }
+    if ($Accept) { return }
+    foreach ($f in $old.Keys) {
+        $lost = @($old[$f].Keys | Where-Object { -not $new[$f].Contains($_) })
+        if ($lost.Count -gt $old[$f].Count * $RdMaxLost / 100) {
+            $ex = ($lost | Select-Object -First 3 | ForEach-Object { $_ -replace "`t", "/" }) -join ", "
+            throw "${f}: spariscono $($lost.Count) voci su $($old[$f].Count) (es. $ex). Chiavi rinominate o formato cambiato?"
+        }
+    }
 }
 
 # Impostazioni RetroDECK di un commit, gia' filtrate per Windows.

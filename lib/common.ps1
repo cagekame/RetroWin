@@ -77,10 +77,16 @@ function Get-File($url, $dest) {
         Say "Scarico $url (tentativo $try)"
         # curl.exe e' incluso in Windows 10/11: segue i redirect, mostra l'avanzamento
         # e si interrompe se per 30 secondi non arriva nulla (niente blocchi silenziosi).
+        # -w scrive su stdout il codice HTTP finale (l'avanzamento va su stderr).
         Remove-Item $tmp -ErrorAction SilentlyContinue
-        & curl.exe -L --fail --retry 3 --retry-delay 3 --progress-bar --connect-timeout 20 --speed-time 30 --speed-limit 1000 `
-            -A "Mozilla/5.0 RetroWinSetup" -o $tmp $url
+        $http = & curl.exe -L --fail --retry 3 --retry-delay 3 --progress-bar --connect-timeout 20 --speed-time 30 --speed-limit 1000 `
+            -A "Mozilla/5.0 RetroWinSetup" -w "%{http_code}" -o $tmp $url
         $code = $LASTEXITCODE
+        if ("$http".Trim() -eq "404") {
+            # il file non c'e' (versione inesistente o tolta): riprovare o scaricarlo a mano non serve
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+            throw "File non trovato sul server (404): $url . Questa versione non esiste o e' stata tolta."
+        }
         if ($code -ne 0 -or -not (Test-Path $tmp) -or (Get-Item $tmp).Length -eq 0) {
             $err = "curl codice $code"
         } else {
@@ -207,6 +213,39 @@ function Backup-File($f) {
         Select-Object -Skip $KeepBackups | Remove-Item -Force
 }
 
+# Copia dei file e delle cartelle di impostazioni in $SnapshotDir\<data>, con gli stessi
+# percorsi che hanno sotto $Root: in piu' ai .bak, una copia completa di come erano
+# prima di questa esecuzione. Solo se qualcosa e' cambiato dall'ultima copia; ne
+# restano $KeepSnapshots.
+function Save-SettingsSnapshot([string[]]$items) {
+    $files = @(foreach ($i in $items) {
+        if (Test-Path $i -PathType Leaf) { Get-Item $i }
+        elseif (Test-Path $i -PathType Container) { Get-ChildItem $i -Recurse -File }
+    }) | Sort-Object FullName
+    if (-not $files) { Say "Nessuna impostazione da copiare (prima installazione)"; return }
+    $sb = New-Object Text.StringBuilder
+    foreach ($f in $files) { [void]$sb.AppendLine($f.FullName + "|" + (Get-FileHash $f.FullName -Algorithm SHA256).Hash) }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sb.ToString()))) -replace '-', '' }
+    finally { $sha.Dispose() }
+    $stampFile = Join-Path $Preset "snapshot.txt"
+    $last = (Get-Stamp $stampFile) -split '\|'
+    if ($last[0] -eq $hash -and $last.Count -gt 1 -and (Test-Path (Join-Path $SnapshotDir $last[1]))) {
+        Say "Impostazioni invariate dall'ultima copia ($($last[1]))"; return
+    }
+    $name = Get-Date -Format "yyyyMMdd_HHmmss"
+    $dest = Join-Path $SnapshotDir $name
+    foreach ($f in $files) {
+        $to = Join-Path $dest $f.FullName.Substring($Root.TrimEnd('\').Length + 1)
+        New-Dir (Split-Path $to)
+        Copy-Item -LiteralPath $f.FullName $to
+    }
+    Set-Stamp $stampFile "$hash|$name"
+    Get-ChildItem $SnapshotDir -Directory | Where-Object { $_.Name -match '^\d{8}_\d{6}$' } |
+        Sort-Object Name -Descending | Select-Object -Skip $KeepSnapshots | Remove-Item -Recurse -Force
+    Say "Copia delle impostazioni ($($files.Count) file): $dest"
+}
+
 # Impronta (SHA256) dei file di alcune cartelle: percorso relativo + contenuto.
 function Get-TreeHash([string[]]$dirs) {
     $sb = New-Object Text.StringBuilder
@@ -221,9 +260,17 @@ function Get-TreeHash([string[]]$dirs) {
     finally { $sha.Dispose() }
 }
 
+# Esito di un passo nel riepilogo: OK, ATTENZIONE (finito, ma qualcosa resta diverso da
+# come dovrebbe: vedi Note) o ERRORE.
 function Run-Step($name, [scriptblock]$block) {
     Write-Host ""
     Write-Host "=== $name ===" -ForegroundColor Green
-    try { & $block; $script:Results[$name] = "OK" }
+    $script:StepNotes = @()
+    try {
+        & $block
+        $script:Results[$name] = if ($script:StepNotes.Count) { "ATTENZIONE: " + ($script:StepNotes -join "; ") } else { "OK" }
+    }
     catch { $script:Results[$name] = "ERRORE: $($_.Exception.Message)"; Warn $_.Exception.Message }
 }
+# Avviso che finisce anche nel riepilogo: il passo risulta ATTENZIONE invece di OK.
+function Note($m) { Warn $m; $script:StepNotes += $m }

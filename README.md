@@ -65,6 +65,11 @@ With options (for example without PCSX2):
 | `-Force` | download and reinstall the programs even if they are up to date |
 | `-ResetConfig` | apply the RetroDECK settings again, then the RetroWin customizations (with `.bak` backups) |
 | `-NoDesktopShortcut` | don't create the Desktop shortcut |
+| `-CheckOnly` | show what an update would do (RetroDECK version, settings entries that would change, program versions) without installing or changing anything |
+| `-Pin <names>` | keep components at their current version: `RetroDECK`, `Theme`, `ES-DE`, `RetroArch`, `DuckStation`, `PCSX2` (comma separated). `RetroDECK:<commit or tag>` pins RetroDECK to that version |
+| `-Unpin <names>` | remove those pins: the components update again |
+| `-Rollback <names>` | go back to the previous version of `ES-DE`, `RetroArch` (with its cores), `DuckStation`, `PCSX2` or `Theme`, which then stays pinned. Settings don't change |
+| `-AcceptRetroDECK` | adopt a new RetroDECK version even if many of its entries disappear (normally it is rejected, see [Updates](#updates)) |
 | `-Ref <tag/branch>` | `bootstrap.ps1` only: project version to use |
 
 `bootstrap.ps1` downloads the latest release of this project into
@@ -107,7 +112,8 @@ To update, just run the install command again.
 
 RetroWin also tells you when there's something new: once a week, when you close
 ES-DE, it checks for a newer RetroWin release, a newer ES-DE, a newer stable RetroDECK
-or a newer RetroDECK theme. If it finds any, a Windows message lists them and asks
+build or a newer RetroDECK theme (pinned components are skipped). If it finds any, a
+Windows message lists them and asks
 whether to update now. Choose **Yes** to update straight away (with the same options
 you installed with), **No** to be reminded next week. It's done by
 `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`) and only works
@@ -119,24 +125,48 @@ time: it's updated together with everything else.
   specifies in `desired_versions.sh`, if any; otherwise the latest one. ES-DE uses
   the latest release, DuckStation the latest official release (RetroDECK uses its
   own Linux build). The installed version is written to `retrowin_version.txt` in
-  the program folder: only what changed is downloaded, a program is never
-  downgraded and, without a network connection, the installed version stays. The
-  program archives contain no settings, so your settings survive updates.
-- **RetroDECK settings.** They come from the latest commit of the `main` branch
-  (stable RetroDECK) of
-  [RetroDECK/components](https://github.com/RetroDECK/components), which also sets
-  the RetroArch and PCSX2 versions. If that commit can't be used (files moved or
-  unreadable), RetroWin stays on the version already applied and says so in the
-  final summary. `$RdCommit` in `install_retro_windows.ps1` is only a fallback for
-  a first install when GitHub doesn't answer. The first time the settings are
-  applied in full. When RetroDECK changes, the script compares the old RetroDECK
-  settings, the new ones and your current ones entry by entry: an entry you never
-  changed takes the new
-  value, an entry you changed stays as it is, new entries are added. Then the
-  RetroWin customizations are applied again. A `.bak` backup is made before every
-  change.
+  the program folder: only what changed is downloaded and a program is never
+  downgraded (except with `-Rollback`). If the version can't be checked or downloaded
+  (no network, or a version RetroDECK asks for doesn't exist), the installed version
+  stays and the step shows **ATTENZIONE** in the final summary instead of OK. The
+  program archives contain no settings, so your settings survive updates. The
+  archive of the previous version stays in `Apps\_download`, ready for `-Rollback`.
+- **RetroDECK settings.** They come from the latest published build of stable
+  RetroDECK (the newest `main-YYYYMMDD-HHMM` tag of
+  [RetroDECK/components](https://github.com/RetroDECK/components)), which also sets
+  the RetroArch and PCSX2 versions; commits between two builds are work in progress
+  and are skipped. Before adopting a new build, RetroWin checks that it can still
+  read it: the files must exist, the RetroArch and PCSX2 versions must be version
+  numbers (or `latest`), the entries RetroWin depends on must be there, and no file
+  may lose more than 10% of its entries compared with the build in use (that usually
+  means renamed keys or a changed format, and an entry-by-entry update would do
+  damage). If a check fails, RetroWin stays on the version already applied and says
+  why in the final summary. If you've looked at the changes and they're fine, run
+  the installer with `-AcceptRetroDECK`; a file that can no longer be read at all
+  (format changed) is still rejected, because it needs a new RetroWin version. Your
+  customizations in `custom/overrides` that use entries RetroDECK removed or renamed
+  are listed in the summary. `$RdCommit` in `install_retro_windows.ps1` is only a
+  fallback for a first install when GitHub doesn't answer. The first time the
+  settings are applied in full. When RetroDECK changes, the script compares the old
+  RetroDECK settings, the new ones and your current ones entry by entry: an entry
+  you never changed takes the new value, an entry you changed stays as it is, new
+  entries are added. Then the RetroWin customizations are applied again. A `.bak`
+  backup is made before every change. The RetroDECK files of the applied version
+  are kept in `Apps\_preset\retrodeck`, so the next update doesn't depend on
+  GitHub still having them.
+- **Settings copies.** Besides the `.bak` files, before changing anything every run
+  copies all the settings files (ES-DE, RetroArch with its `config` folder,
+  DuckStation, PCSX2) to `backups\RetroWin\<date>`, with the same paths they have
+  under `<Root>`, if they changed since the last copy. The last 5 copies are kept.
+  To go back, copy the files back to their place with the programs closed.
+- **Pinning and going back.** `-Pin` keeps a component where it is until you run
+  `-Unpin`; the final summary always lists what is pinned. For example
+  `-Pin RetroDECK` keeps the RetroDECK settings and program versions in use, and
+  `-Pin RetroDECK:main-20261002-1750` goes back to that build. `-Rollback RetroArch`
+  reinstalls the previous RetroArch with its cores and pins it. Use `-CheckOnly` to
+  see what an update would change before running it.
 - **ES-DE theme.** The latest commit of the `main` branch of RetroDECK-theme, like
-  RetroDECK: it is reinstalled when that changes.
+  RetroDECK: it is reinstalled when that changes (unless pinned with `-Pin Theme`).
 
 ## What RetroWin changes compared to RetroDECK
 

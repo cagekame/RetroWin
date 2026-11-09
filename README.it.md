@@ -63,6 +63,11 @@ powershell -ExecutionPolicy Bypass -File .\install_retro_windows.ps1 -SkipPCSX2
 | `-Force` | riscarica e reinstalla i programmi anche se sono aggiornati |
 | `-ResetConfig` | riapplica le impostazioni RetroDECK e poi le personalizzazioni (con backup `.bak`) |
 | `-NoDesktopShortcut` | non crea il collegamento sul Desktop |
+| `-CheckOnly` | mostra cosa farebbe un aggiornamento (versione RetroDECK, voci delle impostazioni che cambierebbero, versioni dei programmi) senza installare né modificare nulla |
+| `-Pin <nomi>` | blocca dei componenti alla versione attuale: `RetroDECK`, `Theme`, `ES-DE`, `RetroArch`, `DuckStation`, `PCSX2` (separati da virgola). `RetroDECK:<commit o tag>` blocca RetroDECK su quella versione |
+| `-Unpin <nomi>` | toglie quei blocchi: i componenti tornano ad aggiornarsi |
+| `-Rollback <nomi>` | torna alla versione precedente di `ES-DE`, `RetroArch` (con i core), `DuckStation`, `PCSX2` o `Theme`, che poi resta bloccata. Le impostazioni non cambiano |
+| `-AcceptRetroDECK` | adotta una nuova versione di RetroDECK anche se spariscono molte voci (di solito viene scartata, vedi [Aggiornamenti](#aggiornamenti)) |
 | `-Ref <tag/ramo>` | solo `bootstrap.ps1`: versione del progetto da usare |
 
 Lo script si può rilanciare quando si vuole: aggiorna ciò che serve, salta il resto e
@@ -74,7 +79,8 @@ Per aggiornare basta rilanciare il comando di installazione.
 
 RetroWin avvisa anche quando c'è qualcosa di nuovo: una volta a settimana, quando
 chiudi ES-DE, controlla se ci sono una release più nuova di RetroWin, un ES-DE più
-nuovo, una RetroDECK stabile più nuova o un tema RetroDECK più nuovo. Se trova
+nuovo, una build di RetroDECK stabile più nuova o un tema RetroDECK più nuovo (i
+componenti bloccati si saltano). Se trova
 qualcosa, un avviso di Windows lo elenca e chiede se aggiornare adesso. **Sì** aggiorna
 subito (con le stesse opzioni dell'installazione), **No** te lo ricorda tra una
 settimana. Lo fa `tools/aggiornamenti.ps1` (log in `Apps\RetroWin\aggiornamenti.log`)
@@ -86,22 +92,50 @@ nuove di continuo: si aggiorna insieme a tutto il resto.
   RetroDECK in `desired_versions.sh`, se c'è; altrimenti l'ultima. ES-DE usa l'ultima
   release, DuckStation l'ultima release ufficiale (RetroDECK ne usa una sua versione
   per Linux). La versione installata è scritta in `retrowin_version.txt` nella
-  cartella del programma: si scarica solo ciò che è cambiato, non si torna mai a una
-  versione più vecchia e, senza rete, resta quella installata. Gli archivi dei
-  programmi non contengono impostazioni, quindi aggiornando restano.
-- **Impostazioni RetroDECK.** Vengono dall'ultimo commit del ramo `main` (RetroDECK
-  stabile) di [RetroDECK/components](https://github.com/RetroDECK/components), che
-  decide anche le versioni di RetroArch e PCSX2. Se quel commit non si può usare (file
-  spostati o illeggibili), RetroWin resta sulla versione già applicata e lo dice nel
-  riepilogo finale. `$RdCommit` in `install_retro_windows.ps1` serve solo per una prima
-  installazione quando GitHub non risponde. La prima volta le impostazioni si applicano
-  per intero. Quando RetroDECK cambia, lo script confronta voce per voce le impostazioni
-  RetroDECK vecchie, quelle nuove e quelle attuali: se una voce non era stata modificata prende
+  cartella del programma: si scarica solo ciò che è cambiato e non si torna mai a una
+  versione più vecchia (salvo con `-Rollback`). Se la versione non si può controllare
+  o scaricare (niente rete, o una versione chiesta da RetroDECK che non esiste), resta
+  quella installata e nel riepilogo finale il passo risulta **ATTENZIONE** invece di
+  OK. Gli archivi dei programmi non contengono impostazioni, quindi aggiornando
+  restano. L'archivio della versione precedente resta in `Apps\_download`, pronto per
+  `-Rollback`.
+- **Impostazioni RetroDECK.** Vengono dall'ultima build pubblicata di RetroDECK
+  stabile (il tag `main-AAAAMMGG-HHMM` più recente di
+  [RetroDECK/components](https://github.com/RetroDECK/components)), che decide anche
+  le versioni di RetroArch e PCSX2; i commit tra una build e l'altra sono lavori in
+  corso e si saltano. Prima di adottare una build nuova RetroWin controlla di saperla
+  ancora leggere: i file devono esserci, le versioni di RetroArch e PCSX2 devono
+  essere numeri di versione (o `latest`), le voci da cui dipende RetroWin devono
+  esserci e nessun file può perdere più del 10% delle voci rispetto alla build in uso
+  (di solito vuol dire chiavi rinominate o formato cambiato, e l'aggiornamento voce
+  per voce farebbe danni). Se un controllo non passa, RetroWin resta sulla versione
+  già applicata e nel riepilogo finale dice perché. Se hai guardato le differenze e
+  vanno bene, lancia l'installazione con `-AcceptRetroDECK`; un file che non si
+  riesce più a leggere affatto (formato cambiato) viene scartato lo stesso, perché
+  serve una nuova versione di RetroWin. Le tue personalizzazioni in `custom/overrides`
+  su voci che RetroDECK ha tolto o rinominato vengono elencate nel riepilogo.
+  `$RdCommit` in `install_retro_windows.ps1` serve solo per una prima installazione
+  quando GitHub non risponde. La prima volta le impostazioni si applicano per intero.
+  Quando RetroDECK cambia, lo script confronta voce per voce le impostazioni RetroDECK
+  vecchie, quelle nuove e quelle attuali: se una voce non era stata modificata prende
   il nuovo valore, se era stata modificata resta com'è. Le voci nuove si aggiungono.
   Poi si riapplicano le personalizzazioni RetroWin. Prima di ogni modifica viene
-  fatto un backup `.bak`.
+  fatto un backup `.bak`. I file RetroDECK della versione applicata restano in
+  `Apps\_preset\retrodeck`, così il prossimo aggiornamento non dipende dal fatto che
+  GitHub li abbia ancora.
+- **Copie delle impostazioni.** Oltre ai `.bak`, prima di toccare qualsiasi cosa ogni
+  esecuzione copia tutti i file di impostazioni (ES-DE, RetroArch con la cartella
+  `config`, DuckStation, PCSX2) in `backups\RetroWin\<data>`, con gli stessi percorsi
+  che hanno sotto `<Root>`, se sono cambiati dall'ultima copia. Restano le ultime 5.
+  Per tornare indietro basta ricopiare i file al loro posto, a programmi chiusi.
+- **Bloccare e tornare indietro.** `-Pin` tiene fermo un componente finché non usi
+  `-Unpin`; il riepilogo finale elenca sempre cosa è bloccato. Per esempio
+  `-Pin RetroDECK` tiene le impostazioni e le versioni dei programmi RetroDECK in uso,
+  e `-Pin RetroDECK:main-20261002-1750` torna a quella build. `-Rollback RetroArch`
+  reinstalla il RetroArch precedente con i suoi core e lo blocca. Con `-CheckOnly`
+  vedi cosa cambierebbe un aggiornamento prima di farlo.
 - **Tema ES-DE.** L'ultimo commit del ramo `main` di RetroDECK-theme, come RetroDECK:
-  si reinstalla quando cambia.
+  si reinstalla quando cambia (salvo blocco con `-Pin Theme`).
 
 ## Personalizzazioni
 

@@ -68,6 +68,8 @@ try {
 
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $apps = Join-Path $Root "Apps"
+    # componente bloccato con -Pin (file scritto da install_retro_windows.ps1): non si propone
+    function Test-Bloccato($nome) { return [bool](Read-Stamp (Join-Path $apps "RetroWin\bloccato-$nome.txt")) }
     $novita = @(
         Invoke-Controllo "RetroWin" {
             $tag = (Get-Json "https://api.github.com/repos/$Repo/releases/latest").tag_name
@@ -75,22 +77,29 @@ try {
             if ($v -and $v -gt $vInst) { "RetroWin $tag (hai la $installata)" }
         }
         Invoke-Controllo "ES-DE" {
+            if (Test-Bloccato "es-de") { return }
             $have = Read-Stamp (Join-Path $apps "ES-DE\retrowin_version.txt")
             $tag = (Get-Json "https://gitlab.com/api/v4/projects/18817634/releases/permalink/latest").tag_name
             $a = ConvertTo-Version $have; $b = ConvertTo-Version $tag
             if ($a -and $b -and $b -gt $a) { "ES-DE $tag (hai la $have)" }
         }
         Invoke-Controllo "RetroDECK" {
-            # commit delle impostazioni applicate; quello scartato dall'installazione non si ripropone
+            if (Test-Bloccato "retrodeck") { return }
+            # ultima build pubblicata (tag main-AAAAMMGG-HHMM), confrontata con il commit delle
+            # impostazioni applicate; quella scartata dall'installazione non si ripropone
             $m = [regex]::Match((Read-Stamp (Join-Path $apps "_preset\es-de.txt")), 'components ([0-9a-f]{40})')
             if ($m.Success) {
-                $head = Get-Head "RetroDECK/components"
-                if ($head -ne $m.Groups[1].Value -and $head -ne (Read-Stamp (Join-Path $apps "RetroWin\retrodeck-scartata.txt"))) {
-                    "RetroDECK: impostazioni e versioni di RetroArch e PCSX2"
+                $tags = Get-Json "https://api.github.com/repos/RetroDECK/components/tags?per_page=100"
+                $t = @($tags | Where-Object { $_.name -match '^main-\d{8}-\d{4}$' } | Sort-Object name -Descending | Select-Object -First 1)
+                if (-not $t) { throw "nessun tag main-AAAAMMGG-HHMM in RetroDECK/components" }
+                $sha = $t[0].commit.sha
+                if ($sha -ne $m.Groups[1].Value -and $sha -ne (Read-Stamp (Join-Path $apps "RetroWin\retrodeck-scartata.txt"))) {
+                    "RetroDECK $($t[0].name): impostazioni e versioni di RetroArch e PCSX2"
                 }
             }
         }
         Invoke-Controllo "tema" {
+            if (Test-Bloccato "theme") { return }
             $have = Read-Stamp (Join-Path $Root "ES-DE\themes\RetroDECK-theme-main\retrowin_version.txt")
             if ($have -and -not (Get-Head "RetroDECK/RetroDECK-theme").StartsWith($have)) { "Tema RetroDECK" }
         }

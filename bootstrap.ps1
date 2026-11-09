@@ -18,7 +18,12 @@ param(
     [switch]$SkipPCSX2,
     [switch]$Force,
     [switch]$ResetConfig,
-    [switch]$NoDesktopShortcut
+    [switch]$NoDesktopShortcut,
+    [switch]$AcceptRetroDECK,
+    [switch]$CheckOnly,
+    [string[]]$Pin,
+    [string[]]$Unpin,
+    [string[]]$Rollback
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,15 +59,19 @@ if (-not $script) { throw "install_retro_windows.ps1 non trovato nel progetto sc
 $keep = ($Ref -split '[\\/]')[0]   # un ramo come "prove/x" sta in _setup\prove\x
 Get-ChildItem $setup | Where-Object { $_.Name -ne $keep } | Remove-Item -Recurse -Force
 
-# le opzioni -Switch ricevute passano tali e quali a install_retro_windows.ps1
+# le opzioni ricevute passano tali e quali a install_retro_windows.ps1 (-Root e -Ref no:
+# gestite qui). Gli elenchi (-Pin, -Unpin, -Rollback) passano separati da virgola.
 $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script.FullName, "-Root", $Root)
 foreach ($k in $PSBoundParameters.Keys) {
-    if ($PSBoundParameters[$k] -is [Management.Automation.SwitchParameter] -and $PSBoundParameters[$k]) { $a += "-$k" }
+    $v = $PSBoundParameters[$k]
+    if ($v -is [Management.Automation.SwitchParameter]) { if ($v) { $a += "-$k" } }
+    elseif ($k -notin "Root", "Ref") { $a += "-$k"; $a += (@($v) -join ',') }
 }
 & powershell.exe @a
 
-# versione installata, per l'avviso aggiornamenti (tools\aggiornamenti.ps1)
-if ($LASTEXITCODE -eq 0) {
+# versione installata, per l'avviso aggiornamenti (tools\aggiornamenti.ps1); con
+# -CheckOnly non si e' installato nulla
+if ($LASTEXITCODE -eq 0 -and -not $CheckOnly) {
     $ver = Join-Path $Root "Apps\RetroWin\versione.txt"
     New-Item -ItemType Directory -Force -Path (Split-Path $ver) | Out-Null
     Set-Content -Path $ver -Value $Ref -Encoding ASCII

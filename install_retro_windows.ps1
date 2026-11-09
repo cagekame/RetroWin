@@ -16,6 +16,18 @@
                   e poi le personalizzazioni RetroWin
     -SkipPCSX2    non installa PCSX2
     -NoDesktopShortcut  non crea il collegamento RetroWin sul Desktop
+    -AcceptRetroDECK  adotta la nuova versione di RetroDECK anche se cambiano molte
+                  voci (di solito e' scartata: chiavi rinominate o formato cambiato?)
+    -Pin <nomi>   blocca alla versione attuale: RetroDECK, Theme, ES-DE, RetroArch,
+                  DuckStation, PCSX2 (separati da virgola). RetroDECK:<commit o tag>
+                  blocca RetroDECK su quella versione. I blocchi restano finche'
+                  non li togli con -Unpin <nomi>.
+    -CheckOnly    mostra cosa farebbe un aggiornamento (RetroDECK, voci che
+                  cambierebbero, versioni dei programmi) senza installare ne'
+                  modificare nulla
+    -Rollback <nomi>  torna alla versione precedente di ES-DE, RetroArch (con i core),
+                  DuckStation, PCSX2 o Theme, che poi resta bloccata (-Unpin per
+                  tornare ad aggiornarla). Le impostazioni non cambiano.
 
   Personalizzazioni RetroWin (cartella custom\ accanto allo script):
     overrides\  solo le voci che cambiano rispetto a RetroDECK
@@ -47,7 +59,12 @@ param(
     [switch]$SkipPCSX2,
     [switch]$Force,
     [switch]$ResetConfig,
-    [switch]$NoDesktopShortcut
+    [switch]$NoDesktopShortcut,
+    [switch]$AcceptRetroDECK,
+    [string[]]$Pin = @(),
+    [string[]]$Unpin = @(),
+    [switch]$CheckOnly,
+    [string[]]$Rollback = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,8 +103,20 @@ $RdThemeRepo   = "RetroDECK/RetroDECK-theme"
 $RdThemeCommit = "c50205283cbb4a1bb2b05c11e897cf129f23f076"
 $RdThemeName = "RetroDECK-theme-main"   # nome usato da RetroDECK in es_settings.xml
 
+# Controlli su una nuova versione di RetroDECK prima di adottarla (Test-RdCommit):
+# percentuale massima di voci che possono sparire da un file rispetto alla versione in
+# uso, e voci (espressioni regolari) da cui dipende RetroWin, che devono esserci.
+$RdMaxLost = 10
+$RdSentinels = @{
+    "retroarch.cfg"   = @('^sort_savefiles_by_content_enable$', '^input_joypad_driver$')
+    "es_settings.xml" = @('^Theme$')
+    "settings.ini"    = @('^Pad1\t', '^Pad2\t')   # usate dal pad del Giocatore 1
+}
+
 # Backup .bak tenuti per ogni file di impostazioni (i piu' vecchi vengono tolti).
 $KeepBackups = 3
+# Copie complete delle impostazioni (<Root>\backups\RetroWin\<data>) tenute.
+$KeepSnapshots = 5
 # ----------------------------------------------------------------
 
 # Personalizzazioni RetroWin rispetto a RetroDECK (vedi README.md)
@@ -137,6 +166,7 @@ $PadScript = Join-Path $Apps "RetroWin\pad-giocatore1.ps1"   # copiato da tools\
 $UpdateScript = Join-Path $Apps "RetroWin\aggiornamenti.ps1"  # copiato da tools\
 $VersionFile  = Join-Path $Apps "RetroWin\versione.txt"       # scritto da bootstrap.ps1
 $RdSkipFile   = Join-Path $Apps "RetroWin\retrodeck-scartata.txt"  # versione RetroDECK non utilizzabile
+$SnapshotDir  = Join-Path $Paths.backups "RetroWin"              # copie delle impostazioni
 
 # Percorsi scritti nelle impostazioni ad ogni esecuzione (come component_prepare.sh
 # di RetroDECK) e controllati alla fine.
@@ -181,6 +211,119 @@ foreach ($n in "common", "config", "programs", "branding") {
     . $lib
 }
 
+# -Pin / -Unpin: nomi separati da virgola (con -File arrivano come un'unica stringa)
+$PinList   = @($Pin   | ForEach-Object { $_ -split ',' } | Where-Object { $_.Trim() })
+$UnpinList = @($Unpin | ForEach-Object { $_ -split ',' } | Where-Object { $_.Trim() })
+$RollbackList = @($Rollback | ForEach-Object { $_ -split ',' } | Where-Object { $_.Trim() } | ForEach-Object { Resolve-PinName $_ })
+foreach ($s in $PinList + $UnpinList) { $null = Resolve-PinName ($s -split ':', 2)[0] }   # nomi sbagliati: errore subito
+if ($RollbackList -contains "RetroDECK") { throw "-Rollback RetroDECK non esiste: per tornare a una versione di RetroDECK usa -Pin RetroDECK:<commit o tag>" }
+
+# ---------------- Versioni da installare ----------------
+# Per ogni programma: quale versione installare e da dove (@{ Version; Url; File }).
+# Usate dall'installazione (Update-Program) e da -CheckOnly.
+$Resolve = [ordered]@{
+    # ES-DE: ultima release dall'API GitLab; senza risposta, al primo giro, il link fisso.
+    "ES-DE" = {
+        try {
+            $rel, $a = Get-ReleaseAsset $EsDeReleaseApi $EsDeAssetRegex "portable"
+            return @{ Version = $rel.tag_name; Url = $a.direct_asset_url; File = "ES-DE-$($rel.tag_name).zip" }
+        } catch {
+            if (Get-ProgramExe "ES-DE") { throw }
+            Warn "API GitLab non raggiungibile ($($_.Exception.Message)), uso il link fisso"
+            return @{ Version = "v3.5.0"; Url = $EsDeFallbackUrl; File = "esde.zip" }
+        }
+    }
+    # RetroArch: versione indicata da RetroDECK, altrimenti l'ultima stabile.
+    "RetroArch" = {
+        $v = Get-RdDesired "RETROARCH" "RetroArch"
+        if (-not $v) {
+            $idx = Invoke-WebRequest -Uri $RetroArchStableIndex -UseBasicParsing
+            $v = [regex]::Matches($idx.Content, 'href="(?:/stable/)?(\d+\.\d+\.\d+)/"') |
+                ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Descending | Select-Object -First 1
+            if (-not $v) { throw "Non riesco a leggere le versioni stabili di RetroArch da $RetroArchStableIndex" }
+        }
+        return @{ Version = "$v"; Url = (Get-RetroArchUrl $v "RetroArch.7z"); File = "RetroArch-$v.7z" }
+    }
+    # DuckStation: RetroDECK usa una sua versione per Linux, qui l'ultima release
+    # ufficiale (rilasci continui sotto il tag "latest", riconosciuti dalla data).
+    "DuckStation" = {
+        $rel, $a = Get-ReleaseAsset "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" 'windows-x64-release\.zip$' "Windows x64 di DuckStation"
+        $d = ([datetime]$rel.published_at).ToUniversalTime().ToString("yyyyMMdd-HHmm")
+        return @{ Version = "latest-$d"; Url = $a.browser_download_url; File = "duckstation-$d.zip" }
+    }
+    # PCSX2: versione indicata da RetroDECK, altrimenti l'ultima release.
+    "PCSX2" = {
+        $v = Get-RdDesired "PCSX2" "PCSX2"
+        if ($v -and $v -notmatch '^v') { $v = "v$v" }   # i tag di PCSX2 iniziano con "v"
+        $api = if ($v) { "https://api.github.com/repos/PCSX2/pcsx2/releases/tags/$v" } else { "https://api.github.com/repos/PCSX2/pcsx2/releases/latest" }
+        $rel, $a = Get-ReleaseAsset $api 'windows-x64-Qt\.7z$' "Windows x64 di PCSX2"
+        return @{ Version = $rel.tag_name; Url = $a.browser_download_url; File = $a.name }
+    }
+}
+
+# ---------------- Solo controllo (-CheckOnly) ----------------
+# Mostra cosa farebbe un aggiornamento senza installare ne' modificare impostazioni.
+# Scarica solo i file RetroDECK da confrontare (in Apps\_preset\retrodeck).
+if ($CheckOnly) {
+    if ($PinList -or $UnpinList -or $RollbackList) { throw "-CheckOnly non si usa insieme a -Pin, -Unpin o -Rollback" }
+    Write-Host ""
+    Write-Host "=== Solo controllo: nessuna modifica ===" -ForegroundColor Green
+    $applied = Get-PresetCommit "es-de"
+    if ($applied) { $RdCommit = $applied }
+    $pinned = Get-Pin "RetroDECK"
+    $target = $null
+    try {
+        if ($pinned) { $target = $pinned; $label = "bloccata" }
+        else { $tag = Get-RdLatestTag; $target = $tag.Sha; $label = $tag.Name }
+    } catch { Warn "RetroDECK: non riesco a controllare ($($_.Exception.Message))" }
+    if (-not $applied) {
+        Say "RetroDECK: impostazioni mai applicate, la prima installazione le applica per intero"
+    } elseif ($target -and $target -ne $applied) {
+        Say "RetroDECK: in uso $($applied.Substring(0, 8)), disponibile $($target.Substring(0, 8)) ($label)"
+        $ok = $true
+        try { Test-RdCommit $target $applied -Accept:$AcceptRetroDECK; Say "  controlli superati: verrebbe adottata" }
+        catch { $ok = $false; Warn "  verrebbe scartata: $($_.Exception.Message)" }
+        if ($ok) {
+            $old = Get-RdSets $applied; $new = Get-RdSets $target
+            $cur = @{
+                "retroarch.cfg"              = $(if (Test-Path "$RaDir\retroarch.cfg") { Read-Cfg "$RaDir\retroarch.cfg" } else { @{} })
+                "retroarch-core-options.cfg" = $(if (Test-Path "$RaDir\retroarch-core-options.cfg") { Read-Cfg "$RaDir\retroarch-core-options.cfg" } else { @{} })
+                "settings.ini"               = $(if (Test-Path "$DsDir\settings.ini") { ConvertTo-IniDict @(Read-IniTriples "$DsDir\settings.ini") } else { @{} })
+                "es_settings.xml"            = $(if (Test-Path $EsSettingsFile) { Read-EsSettings ([IO.File]::ReadAllText($EsSettingsFile)) } else { @{} })
+            }
+            foreach ($f in $old.Keys) {
+                $c = Get-RdChanges $old[$f] $new[$f] $cur[$f]
+                $lost = @($old[$f].Keys | Where-Object { -not $new[$f].Contains($_) }).Count
+                $ex = if ($c.Set.Count) { " (" + ((@($c.Set.Keys) | Select-Object -First 8 | ForEach-Object { $_ -replace "`t", "/" }) -join ", ") + $(if ($c.Set.Count -gt 8) { ", ..." }) + ")" } else { "" }
+                Say ("  {0}: {1} voci da scrivere{2}, {3} tue lasciate come sono, {4} tolte da RetroDECK" -f $f, $c.Set.Count, $ex, $c.Kept, $lost)
+            }
+            $gone = @(Get-CustomKeysRemoved $old $new)
+            if ($gone) { Warn "  personalizzazioni su voci tolte o rinominate: $($gone -join ', ')" }
+            $RdCommit = $target; $script:RdVersions = $null   # versioni dei programmi della nuova RetroDECK
+        }
+    } elseif ($target) {
+        Say "RetroDECK: $($applied.Substring(0, 8)) ($label) gia' in uso"
+    }
+    foreach ($n in $Resolve.Keys) {
+        if ($n -eq "PCSX2" -and $SkipPCSX2) { continue }
+        $exe = Get-ProgramExe $n
+        $have = if ($exe) { Get-Installed $Prog[$n].Dir } else { "" }
+        if ($exe -and (Get-Pin $n)) { Say "${n}: $have, bloccato"; continue }
+        try { $r = & $Resolve[$n] } catch { Warn "${n}: non riesco a controllare ($($_.Exception.Message))"; continue }
+        if (-not $exe) { Say "${n}: non installato, verrebbe installata la $($r.Version)" }
+        elseif ($have -eq $r.Version) { Say "${n}: $have, aggiornato" }
+        else { Say "${n}: $have -> $($r.Version)" }
+    }
+    $theme = Join-Path $Paths.themes $RdThemeName
+    $tv = Get-Installed $theme
+    if ($tv -and (Get-Pin "Theme")) { Say "Tema: $tv, bloccato" }
+    else {
+        try { $h = (Get-RepoHead $RdThemeRepo).Substring(0, 8); Say "Tema: $(if ($tv) { $tv } else { 'non installato' })$(if ($tv -ne $h) { " -> $h" } else { ', aggiornato' })" }
+        catch { Warn "Tema: non riesco a controllare ($($_.Exception.Message))" }
+    }
+    exit 0
+}
+
 # ---------------- Controllo programmi aperti ----------------
 # Spostare cartelle o modificare configurazioni con i programmi aperti non funziona.
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
@@ -194,56 +337,116 @@ New-Dir $Root
 Say "Cartella di lavoro: $Root"
 New-Dir $Apps; New-Dir $Dl; New-Dir $Emu
 
+# ---------------- Blocchi (-Pin / -Unpin) ----------------
+if ($PinList -or $UnpinList) {
+    Run-Step "Blocchi" {
+        foreach ($s in $UnpinList) {
+            $n = Resolve-PinName ($s -split ':', 2)[0]
+            Remove-Item (Get-PinFile $n) -ErrorAction SilentlyContinue
+            Say "$n sbloccato: torna ad aggiornarsi"
+        }
+        foreach ($s in $PinList) {
+            $n, $ref = $s -split ':', 2
+            $n = Resolve-PinName $n
+            if ($n -eq "RetroDECK") {
+                if ($ref) { $sha = Resolve-RdRef $ref.Trim() }
+                else { $sha = Get-PresetCommit "es-de"; if (-not $sha) { $sha = $RdCommit }; $ref = "in uso" }
+                Set-Stamp (Get-PinFile $n) "$sha $ref"
+                Say "RetroDECK bloccata a $($sha.Substring(0, 8)) ($ref)"
+            } else {
+                $dir = if ($n -eq "Theme") { Join-Path $Paths.themes $RdThemeName } else { $Prog[$n].Dir }
+                $v = Get-Installed $dir
+                if (-not $v) { throw "$n non installato: niente da bloccare" }
+                Set-Stamp (Get-PinFile $n) $v
+                Say "$n bloccato alla versione $v"
+            }
+        }
+    }
+}
+
+# ---------------- Ritorno indietro (-Rollback) ----------------
+# Reinstalla la versione precedente e la blocca: i passi dei programmi qui sotto la
+# lasciano com'e' finche' non si usa -Unpin.
+if ($RollbackList) {
+    Run-Step "Ritorno indietro" {
+        foreach ($n in $RollbackList) {
+            if ($n -eq "Theme") {
+                $dir = Join-Path $Paths.themes $RdThemeName
+                Restore-Previous "Tema $RdThemeName" $dir @("theme.xml")
+            } else {
+                $dir = $Prog[$n].Dir
+                Restore-Previous $n $dir @($Prog[$n].Exe)
+                # i core vanno con la loro versione di RetroArch
+                if ($n -eq "RetroArch") {
+                    try { Restore-Previous "Core RetroArch" (Join-Path $dir "cores") @("*_libretro.dll") }
+                    catch { Note "core non riportati indietro: $($_.Exception.Message)" }
+                }
+            }
+            Set-Stamp (Get-PinFile $n) (Get-Installed $dir)
+            Say "$n bloccato alla $(Get-Installed $dir): per tornare ad aggiornarlo usa -Unpin $n"
+        }
+    }
+}
+
 # ---------------- Versione RetroDECK ----------------
-# Si usa l'ultimo commit di RetroDECK stabile (ramo main di RetroDECK/components).
-# Se i suoi file sono spostati o illeggibili, o GitHub non risponde, resta la
-# versione gia' applicata. Una versione scartata viene segnata in $RdSkipFile:
-# l'avviso aggiornamenti non la ripropone finche' RetroDECK non ne pubblica un'altra.
+# Si usa l'ultima build pubblicata di RetroDECK stabile (tag main-AAAAMMGG-HHMM di
+# RetroDECK/components) o, se c'e', il commit bloccato con -Pin RetroDECK. Prima di
+# adottare una versione nuova Test-RdCommit controlla che RetroWin la sappia leggere:
+# se no, o se GitHub non risponde, resta la versione gia' applicata. Una versione
+# scartata viene segnata in $RdSkipFile: l'avviso aggiornamenti non la ripropone
+# finche' RetroDECK non ne pubblica un'altra.
 Run-Step "Versione RetroDECK" {
     $base = Get-PresetCommit "es-de"
     if ($base) { $script:RdCommit = $base }
     $inUso = $RdCommit.Substring(0, 8)
-    try { $head = Get-RepoHead "RetroDECK/components" }
-    catch { Warn "Non riesco a controllare RetroDECK ($($_.Exception.Message)): resta $inUso"; return }
-    if ($head -eq $RdCommit) { Remove-Item $RdSkipFile -ErrorAction SilentlyContinue; Say "RetroDECK $inUso gia' aggiornata"; return }
-    try { Test-RdCommit $head }
-    catch {
-        Set-Stamp $RdSkipFile $head
-        throw "Nuova RetroDECK $($head.Substring(0, 8)) non utilizzabile, resta $inUso ($($_.Exception.Message))"
+    $pinned = Get-Pin "RetroDECK"
+    if ($pinned) {
+        if ($pinned -notmatch '^[0-9a-f]{40}$') { throw "blocco non valido in $(Get-PinFile 'RetroDECK'): '$pinned' (rifallo con -Pin RetroDECK)" }
+        $target = $pinned; $label = "bloccata"
+    } else {
+        try { $tag = Get-RdLatestTag }
+        catch { Note "Non riesco a controllare RetroDECK ($($_.Exception.Message)): resta $inUso"; return }
+        $target = $tag.Sha; $label = $tag.Name
     }
-    Remove-Item $RdSkipFile -ErrorAction SilentlyContinue
-    $script:RdCommit = $head
-    Say "RetroDECK: passo da $inUso a $($head.Substring(0, 8))"
+    if ($target -eq $RdCommit) {
+        if (-not $pinned) { Remove-Item $RdSkipFile -ErrorAction SilentlyContinue }
+        Say "RetroDECK $inUso ($label) gia' in uso"; return
+    }
+    try { Test-RdCommit $target $RdCommit -Accept:$AcceptRetroDECK }
+    catch {
+        if (-not $pinned) { Set-Stamp $RdSkipFile $target }
+        throw "RetroDECK $($target.Substring(0, 8)) ($label) non utilizzabile, resta $inUso. $($_.Exception.Message)." +
+              " Se hai controllato e va bene lo stesso, rilancia con -AcceptRetroDECK"
+    }
+    if (-not $pinned) { Remove-Item $RdSkipFile -ErrorAction SilentlyContinue }
+    $prev = $RdCommit
+    $script:RdCommit = $target
+    Say "RetroDECK: passo da $inUso a $($target.Substring(0, 8)) ($label)"
+    # personalizzazioni (custom\overrides) su voci che RetroDECK ha tolto o rinominato
+    try {
+        $gone = @(Get-CustomKeysRemoved (Get-RdSets $prev) (Get-RdSets $target))
+        if ($gone) { Note "voci delle personalizzazioni tolte o rinominate da RetroDECK, controlla custom\overrides: $($gone -join ', ')" }
+    } catch { Note "controllo delle personalizzazioni non riuscito: $($_.Exception.Message)" }
+}
+
+# ---------------- Copia delle impostazioni ----------------
+# Prima di toccare qualsiasi cosa: copia completa dei file di impostazioni (in piu' ai
+# .bak, che coprono una modifica alla volta). Per tornare indietro basta ricopiarli.
+Run-Step "Copia impostazioni" {
+    Save-SettingsSnapshot @($EsSettingsFile,
+        (Join-Path $RaDir "retroarch.cfg"), (Join-Path $RaDir "retroarch-core-options.cfg"), (Join-Path $RaDir "config"),
+        (Join-Path $DsDir "settings.ini"), (Join-Path $Prog["PCSX2"].Dir "inis"))
 }
 
 # ---------------- ES-DE ----------------
 Run-Step "ES-DE" {
-    Update-Program "ES-DE" $EsDeApp @($Prog["ES-DE"].Exe) {
-        try {
-            $rel, $a = Get-ReleaseAsset $EsDeReleaseApi $EsDeAssetRegex "portable"
-            return @{ Version = $rel.tag_name; Url = $a.direct_asset_url; File = "ES-DE-$($rel.tag_name).zip" }
-        } catch {
-            if (Get-ProgramExe "ES-DE") { throw }
-            Warn "API GitLab non raggiungibile ($($_.Exception.Message)), uso il link fisso"
-            return @{ Version = "v3.5.0"; Url = $EsDeFallbackUrl; File = "esde.zip" }
-        }
-    } @("ES-DE-*.zip", "esde.zip")
+    Update-Program "ES-DE" $EsDeApp @($Prog["ES-DE"].Exe) $Resolve["ES-DE"] @("ES-DE-*.zip", "esde.zip") "ES-DE"
 }
 
 # ---------------- RetroArch ----------------
-# Versione indicata da RetroDECK, altrimenti l'ultima stabile. L'archivio non
-# contiene retroarch.cfg: aggiornando, le impostazioni restano.
+# L'archivio non contiene retroarch.cfg: aggiornando, le impostazioni restano.
 Run-Step "RetroArch" {
-    Update-Program "RetroArch" $RaDir @($Prog["RetroArch"].Exe) {
-        $v = (Get-RdVersions)["RETROARCH"]
-        if (-not $v) {
-            $idx = Invoke-WebRequest -Uri $RetroArchStableIndex -UseBasicParsing
-            $v = [regex]::Matches($idx.Content, 'href="(?:/stable/)?(\d+\.\d+\.\d+)/"') |
-                ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Descending | Select-Object -First 1
-            if (-not $v) { throw "Non riesco a leggere le versioni stabili di RetroArch da $RetroArchStableIndex" }
-        }
-        return @{ Version = "$v"; Url = (Get-RetroArchUrl $v "RetroArch.7z"); File = "RetroArch-$v.7z" }
-    } @("RetroArch-*.7z")
+    Update-Program "RetroArch" $RaDir @($Prog["RetroArch"].Exe) $Resolve["RetroArch"] @("RetroArch-*.7z") "RetroArch"
     # retroarch.cfg accanto all'exe: su Windows RetroArch lo usa (modalita' portable)
     New-EmptyFile (Join-Path $RaDir "retroarch.cfg")
 }
@@ -258,34 +461,22 @@ Run-Step "Core libretro" {
     # un core a caso basta come "eseguibile": serve solo a sapere se ci sono gia'
     Update-Program "Core RetroArch" $coresDir @("*_libretro.dll") {
         return @{ Version = $v; Url = (Get-RetroArchUrl $v "RetroArch_cores.7z"); File = "RetroArch_cores-$v.7z" }
-    } @("RetroArch_cores-*.7z")
+    } @("RetroArch_cores-*.7z") "RetroArch"
     Say "Core installati: $(@(Get-ChildItem $coresDir -Filter '*_libretro.dll').Count)"
 }
 
 # ---------------- DuckStation ----------------
-# RetroDECK usa una sua versione per Linux: qui l'ultima release ufficiale
-# (rilasci continui sotto il tag "latest", riconosciuti dalla data).
 Run-Step "DuckStation" {
-    Update-Program "DuckStation" $DsDir @($Prog["DuckStation"].Exe) {
-        $rel, $a = Get-ReleaseAsset "https://api.github.com/repos/stenzek/duckstation/releases/tags/latest" 'windows-x64-release\.zip$' "Windows x64 di DuckStation"
-        $d = ([datetime]$rel.published_at).ToUniversalTime().ToString("yyyyMMdd-HHmm")
-        return @{ Version = "latest-$d"; Url = $a.browser_download_url; File = "duckstation-$d.zip" }
-    } @("duckstation-*.zip")
+    Update-Program "DuckStation" $DsDir @($Prog["DuckStation"].Exe) $Resolve["DuckStation"] @("duckstation-*.zip") "DuckStation"
     # portable.txt => impostazioni accanto all'exe
     New-EmptyFile (Join-Path $DsDir "portable.txt")
 }
 
 # ---------------- PCSX2 (opzionale) ----------------
-# Versione indicata da RetroDECK, altrimenti l'ultima release.
 if (-not $SkipPCSX2) {
     Run-Step "PCSX2" {
         $dest = $Prog["PCSX2"].Dir
-        Update-Program "PCSX2" $dest @($Prog["PCSX2"].Exe) {
-            $v = (Get-RdVersions)["PCSX2"]
-            $api = if ($v) { "https://api.github.com/repos/PCSX2/pcsx2/releases/tags/$v" } else { "https://api.github.com/repos/PCSX2/pcsx2/releases/latest" }
-            $rel, $a = Get-ReleaseAsset $api 'windows-x64-Qt\.7z$' "Windows x64 di PCSX2"
-            return @{ Version = $rel.tag_name; Url = $a.browser_download_url; File = $a.name }
-        } @("pcsx2-*.7z")
+        Update-Program "PCSX2" $dest @($Prog["PCSX2"].Exe) $Resolve["PCSX2"] @("pcsx2-*.7z") "PCSX2"
         New-EmptyFile (Join-Path $dest "portable.ini")
     }
 } else {
@@ -322,18 +513,22 @@ Run-Step "ES-DE config" {
     New-Dir (Split-Path $f)
     $orig = if (Test-Path $f) { [IO.File]::ReadAllText($f) } else { "" }
     $txt = $orig
-    $mode = Get-PresetMode "es-de"
-    if ($mode -eq "full" -or ($mode -and -not $orig)) {
-        Backup-File $f
-        $txt = Get-RdEsDe $RdCommit
-        Set-PresetDone "es-de" $true
-        Say "Impostazioni RetroDECK applicate a ES-DE"
-    } elseif ($mode -eq "merge") {
-        $c = Get-RdChanges (Read-EsSettings (Get-RdEsDe (Get-PresetCommit "es-de"))) (Read-EsSettings (Get-RdEsDe $RdCommit)) (Read-EsSettings $txt)
-        if ($c.Set.Count) { Backup-File $f; $txt = Set-EsSettings $txt $c.Set }
-        Set-PresetDone "es-de" ($c.Set.Count -gt 0)
-        Say-RdUpdate "ES-DE" $c.Set.Count $c.Kept
-    }
+    # se le impostazioni RetroDECK non si possono aggiornare il resto del passo si fa lo stesso
+    $rdErr = $null
+    try {
+        $mode = Get-PresetMode "es-de"
+        if ($mode -eq "full" -or ($mode -and -not $orig)) {
+            Backup-File $f
+            $txt = Get-RdEsDe $RdCommit
+            Set-PresetDone "es-de" $true
+            Say "Impostazioni RetroDECK applicate a ES-DE"
+        } elseif ($mode -eq "merge") {
+            $c = Get-RdChanges (Read-EsSettings (Get-RdEsDe (Get-PresetCommit "es-de"))) (Read-EsSettings (Get-RdEsDe $RdCommit)) (Read-EsSettings $txt)
+            if ($c.Set.Count) { Backup-File $f; $txt = Set-EsSettings $txt $c.Set }
+            Set-PresetDone "es-de" ($c.Set.Count -gt 0)
+            Say-RdUpdate "ES-DE" $c.Set.Count $c.Kept
+        }
+    } catch { $rdErr = $_.Exception.Message; Warn "Impostazioni RetroDECK di ES-DE non aggiornate: $rdErr" }
     foreach ($k in $EsDePaths.Keys) { $txt = Set-EsSetting $txt "string" $k $EsDePaths[$k] }
     # script di evento: servono a RetroWin (pad del Giocatore 1, vedi sotto)
     $txt = Set-EsSetting $txt "bool" "CustomEventScripts" "true"
@@ -351,7 +546,7 @@ Run-Step "ES-DE config" {
         $c = try { Get-RepoHead $RdThemeRepo } catch { if (Test-Path (Join-Path $theme "theme.xml")) { throw }; $RdThemeCommit }
         $tv = $c.Substring(0, 8)
         return @{ Version = $tv; Url = "https://github.com/$RdThemeRepo/archive/$c.zip"; File = "RetroDECK-theme-$tv.zip" }
-    } @("RetroDECK-theme*.zip")
+    } @("RetroDECK-theme*.zip") "Theme"
     # custom\files puo' sostituire file del tema: va riapplicato
     if ($Force -or (Get-Installed $theme) -ne $had) { $script:PresetApplied = $true }
     # cartelle sistema in roms (RetroDECK: start_esde --create-system-dirs)
@@ -362,6 +557,7 @@ Run-Step "ES-DE config" {
     $after = @(Get-ChildItem $Paths.roms -Directory).Count
     if ($after -lt 100) { throw "Cartelle sistema in roms non create (trovate $after)" }
     Say "Cartelle sistema in roms: $after (prima $before)"
+    if ($rdErr) { throw "impostazioni RetroDECK non aggiornate, il resto e' a posto ($rdErr)" }
 }
 
 # ---------------- RetroArch: impostazioni RetroDECK ----------------
@@ -370,26 +566,29 @@ Run-Step "RetroArch config" {
     $cfg = Join-Path $ra "retroarch.cfg"
     if (-not (Get-ProgramExe "RetroArch")) { throw "RetroArch non installato" }
     $opt = Join-Path $ra "retroarch-core-options.cfg"
-    $mode = Get-PresetMode "retroarch"
-    if ($mode -eq "full") {
-        $new = Get-RdRetroArch $RdCommit
-        Backup-File $cfg; Set-CfgValues $cfg $new.cfg
-        Backup-File $opt; Set-CfgValues $opt $new.opt
-        Set-PresetDone "retroarch" $true
-        Say "Impostazioni RetroDECK applicate a RetroArch ($($new.cfg.Count) voci, $($new.opt.Count) opzioni core)"
-    } elseif ($mode -eq "merge") {
-        $old = Get-RdRetroArch (Get-PresetCommit "retroarch")
-        $new = Get-RdRetroArch $RdCommit
-        $n = 0; $kept = 0
-        foreach ($p in @(@($cfg, "cfg"), @($opt, "opt"))) {
-            $cur = if (Test-Path $p[0]) { Read-Cfg $p[0] } else { @{} }
-            $c = Get-RdChanges $old[$p[1]] $new[$p[1]] $cur
-            if ($c.Set.Count) { Backup-File $p[0]; Set-CfgValues $p[0] $c.Set }
-            $n += $c.Set.Count; $kept += $c.Kept
+    $rdErr = $null
+    try {
+        $mode = Get-PresetMode "retroarch"
+        if ($mode -eq "full") {
+            $new = Get-RdRetroArch $RdCommit
+            Backup-File $cfg; Set-CfgValues $cfg $new.cfg
+            Backup-File $opt; Set-CfgValues $opt $new.opt
+            Set-PresetDone "retroarch" $true
+            Say "Impostazioni RetroDECK applicate a RetroArch ($($new.cfg.Count) voci, $($new.opt.Count) opzioni core)"
+        } elseif ($mode -eq "merge") {
+            $old = Get-RdRetroArch (Get-PresetCommit "retroarch")
+            $new = Get-RdRetroArch $RdCommit
+            $n = 0; $kept = 0
+            foreach ($p in @(@($cfg, "cfg"), @($opt, "opt"))) {
+                $cur = if (Test-Path $p[0]) { Read-Cfg $p[0] } else { @{} }
+                $c = Get-RdChanges $old[$p[1]] $new[$p[1]] $cur
+                if ($c.Set.Count) { Backup-File $p[0]; Set-CfgValues $p[0] $c.Set }
+                $n += $c.Set.Count; $kept += $c.Kept
+            }
+            Set-PresetDone "retroarch" ($n -gt 0)
+            Say-RdUpdate "RetroArch" $n $kept
         }
-        Set-PresetDone "retroarch" ($n -gt 0)
-        Say-RdUpdate "RetroArch" $n $kept
-    }
+    } catch { $rdErr = $_.Exception.Message; Warn "Impostazioni RetroDECK di RetroArch non aggiornate: $rdErr" }
     Set-CfgValues $cfg $RaPaths
     Set-Junction (Join-Path $Paths.logs "retroarch") (Join-Path $ra "logs")
     # shaders, filtri e bordi (retroarch_updater di RetroDECK): presi dal pacchetto RetroArch
@@ -408,28 +607,36 @@ Run-Step "RetroArch config" {
         Expand-Any $z $ch
         Say "Cheat installati in $ch"
     }
+    if ($rdErr) { throw "impostazioni RetroDECK non aggiornate, il resto e' a posto ($rdErr)" }
 }
 
 # ---------------- DuckStation: impostazioni RetroDECK ----------------
 Run-Step "DuckStation config" {
     $ini = Join-Path $DsDir "settings.ini"
     if (-not (Get-ProgramExe "DuckStation")) { throw "DuckStation non installato" }
-    $mode = Get-PresetMode "duckstation"
-    if ($mode -eq "full") {
-        $vals = @(ConvertTo-Triples (Get-RdDuckStation $RdCommit))
-        Backup-File $ini
-        Set-IniValues $ini $vals
-        Set-PresetDone "duckstation" $true
-        Say "Impostazioni RetroDECK applicate a DuckStation ($($vals.Count) voci)"
-    } elseif ($mode -eq "merge") {
-        $cur = if (Test-Path $ini) { ConvertTo-IniDict @(Read-IniTriples $ini) } else { @{} }
-        $c = Get-RdChanges (Get-RdDuckStation (Get-PresetCommit "duckstation")) (Get-RdDuckStation $RdCommit) $cur
-        if ($c.Set.Count) { Backup-File $ini; Set-IniValues $ini @(ConvertTo-Triples $c.Set) }
-        Set-PresetDone "duckstation" ($c.Set.Count -gt 0)
-        Say-RdUpdate "DuckStation" $c.Set.Count $c.Kept
-    }
+    $rdErr = $null
+    try {
+        $mode = Get-PresetMode "duckstation"
+        if ($mode -eq "full") {
+            $vals = @(ConvertTo-Triples (Get-RdDuckStation $RdCommit))
+            Backup-File $ini
+            Set-IniValues $ini $vals
+            Set-PresetDone "duckstation" $true
+            Say "Impostazioni RetroDECK applicate a DuckStation ($($vals.Count) voci)"
+        } elseif ($mode -eq "merge") {
+            $cur = if (Test-Path $ini) { ConvertTo-IniDict @(Read-IniTriples $ini) } else { @{} }
+            $c = Get-RdChanges (Get-RdDuckStation (Get-PresetCommit "duckstation")) (Get-RdDuckStation $RdCommit) $cur
+            if ($c.Set.Count) { Backup-File $ini; Set-IniValues $ini @(ConvertTo-Triples $c.Set) }
+            Set-PresetDone "duckstation" ($c.Set.Count -gt 0)
+            Say-RdUpdate "DuckStation" $c.Set.Count $c.Kept
+        }
+    } catch { $rdErr = $_.Exception.Message; Warn "Impostazioni RetroDECK di DuckStation non aggiornate: $rdErr" }
     Set-IniValues $ini @(ConvertTo-Triples $DsPaths)
+    if ($rdErr) { throw "impostazioni RetroDECK non aggiornate, il resto e' a posto ($rdErr)" }
 }
+
+# File RetroDECK dei commit non piu' usati (in _preset\retrodeck): tolti.
+try { Remove-UnusedRdFiles } catch { Warn "Pulizia di $Preset\retrodeck non riuscita: $($_.Exception.Message)" }
 
 # ---------------- Pad del Giocatore 1 ----------------
 # All'avvio di ES-DE (evento "startup") parte in background tools\pad-giocatore1.ps1:
@@ -632,7 +839,7 @@ foreach ($k in $Prog.Keys) {
         $rel = $f.FullName.Substring($Root.Length)
     } else { $rel = (Join-Path $Prog[$k].Dir $Prog[$k].Exe).Substring($Root.Length) }
     $exeLines += ("  {0,-12} {1,-10} {2}" -f $k, $state, $rel)
-    if ($state -ne "OK" -and $Results[$k] -eq "OK") { $Results[$k] = "ERRORE: eseguibile $state ($rel)" }
+    if ($state -ne "OK" -and $Results[$k] -and $Results[$k] -notlike "ERRORE*") { $Results[$k] = "ERRORE: eseguibile $state ($rel)" }
 }
 
 # Valori attesi ($expected) confrontati con quelli letti dal file: una riga per gruppo.
@@ -665,6 +872,10 @@ $report = Join-Path $Root "report_struttura.txt"
 # riepilogo: mostrato a schermo e all'inizio del report
 $summary = @("RISULTATI")
 $Results.GetEnumerator() | ForEach-Object { $summary += ("  {0,-22} {1}" -f $_.Key, $_.Value) }
+$summary += ""
+$summary += "RetroDECK in uso: $($RdCommit.Substring(0, 8))"
+$pins = @($PinNames | Where-Object { Get-Pin $_ } | ForEach-Object { $p = Get-Pin $_; if ($p.Length -eq 40) { $p = $p.Substring(0, 8) }; "$_ $p" })
+$summary += "Bloccati (-Unpin per sbloccare): $(if ($pins) { $pins -join ', ' } else { 'nessuno' })"
 $summary += ""
 $summary += "VERIFICA EXE (percorsi attesi)"
 $summary += $exeLines
